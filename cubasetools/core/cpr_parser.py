@@ -110,23 +110,93 @@ class CprParser:
         """Extract track entries from binary data.
 
         Primary strategy: MixerChannel strip definitions detected via
-        Name...String...TRACKNAME...InputFilter pattern.
+        Name...String...TRACKNAME...InputFilter pattern, with track types
+        determined from binary section markers (Gruppenspuren, VST-Instrumente).
         Fallback: legacy MAudioTrackEvent etc. markers.
         """
         strips = self._extract_channel_strips()
 
         if strips:
+            # Detect section boundaries for track type classification
+            sections = self._detect_sections()
+
             deduped = self._deduplicate_strips(strips)
-            # Filter out hardware I/O channels (stored in a separate section
-            # at the end of the file with a large gap before them).
-            # Only keep "Stereo Out" from that section.
             filtered = self._filter_io_section(deduped)
+
+            # Classify track types based on which section they fall in
             for track, pos in filtered:
+                track.track_type = self._classify_by_section(track.name, pos, sections)
                 track.index = len(self.project.tracks)
                 self.project.tracks.append(track)
                 self._track_positions.append((track, pos))
         else:
             self._extract_legacy_tracks()
+
+    def _detect_sections(self) -> dict[str, int]:
+        """Find section boundaries in the binary data.
+
+        Cubase stores tracks in sections:
+        - Arrangement area (audio, instrument, MIDI, folder tracks)
+        - Gruppenspuren / Group Tracks (group + FX channel tracks)
+        - VST-Instrumente / VST Instruments (instrument mixer channels)
+        """
+        sections: dict[str, int] = {}
+
+        # Search for section headers (German and English)
+        for marker, section_name in [
+            (b"Gruppenspuren", "group_section"),
+            (b"Group Tracks", "group_section"),
+            (b"Group Channel Tracks", "group_section"),
+            (b"VST-Instrumente", "vst_section"),
+            (b"VST Instruments", "vst_section"),
+        ]:
+            pos = self.data.find(marker)
+            if pos != -1 and section_name not in sections:
+                sections[section_name] = pos
+
+        return sections
+
+    def _classify_by_section(
+        self, name: str, pos: int, sections: dict[str, int]
+    ) -> TrackType:
+        """Classify track type based on binary section position."""
+        lower = name.lower()
+
+        # Master bus
+        if lower in ("stereo out", "master", "main out"):
+            return TrackType.MASTER
+
+        group_start = sections.get("group_section", float("inf"))
+        vst_start = sections.get("vst_section", float("inf"))
+
+        # VST Instruments section: these are instrument mixer channels
+        if pos >= vst_start:
+            return TrackType.INSTRUMENT
+
+        # Gruppenspuren section: group + FX channel tracks
+        if pos >= group_start:
+            # Distinguish FX from Group using keywords (works across languages
+            # because effect names are universal: Hall, Reverb, Delay, Chorus etc.)
+            if any(kw in lower for kw in (
+                "hall", "verb", "delay", "flanger", "chorus",
+                "breit", "parallel", "reverb", "echo",
+            )):
+                return TrackType.FX
+            return TrackType.GROUP
+
+        # Arrangement section: use name heuristics for sub-classification
+        if lower.startswith(("group", "groupchannel")):
+            return TrackType.GROUP
+        if any(kw in lower for kw in ("grp", "gruppe", "bus")):
+            return TrackType.GROUP
+        if any(kw in lower for kw in (
+            "kontakt", "omnisphere", "diva", "retrologue",
+            "beep", "omnivocal", "halion", "groove agent",
+            "padshop", "backbone",
+        )):
+            return TrackType.INSTRUMENT
+
+        return TrackType.AUDIO
 
     def _filter_io_section(
         self, strips: list[tuple[Track, int]]
@@ -177,7 +247,7 @@ class CprParser:
                 continue
 
             track = Track(name=name)
-            track.track_type = _classify_track_type(name)
+            # Track type will be set by _classify_by_section after dedup
             results.append((track, pos))
 
         return results
@@ -552,10 +622,8 @@ class CprParser:
             if _is_binary_artifact(track.name):
                 continue
 
-            # Re-classify track type with full context (only for AUDIO,
-            # since Group/FX/Instrument/Master were already classified correctly)
-            if track.track_type == TrackType.AUDIO:
-                track.track_type = _classify_track_type(track.name, has_plugins=bool(track.plugins))
+            # Track types are already set by _classify_by_section
+            # No name-based reclassification needed
 
             filtered.append(track)
 
@@ -585,7 +653,7 @@ def _is_binary_artifact(name: str) -> bool:
     """Check if a name looks like binary garbage rather than a real track name."""
     # Known binary artifacts found in .cpr files (reversed 4-byte markers etc.)
     artifacts = {
-        "gITI", "aLoC", "daPN", "shtE", "DILT", "braF", "dpxE", "oloS",
+        "aLoC", "daPN", "shtE", "DILT", "braF", "dpxE", "oloS",
         "sklC", "iCVT", "BuTT", "BlTT", "kcoL", "adcn", "Pler", "GLFX",
         "TDRH", "IVffO", "CmArray", "CmContainer", "BaSE", "mAsT",
     }
@@ -595,7 +663,7 @@ def _is_binary_artifact(name: str) -> bool:
 # ── Track type classification ────────────────────────────────────────────
 
 def _classify_track_type(name: str, has_plugins: bool = True) -> TrackType:
-    """Classify track type from its name and context."""
+    """Classify track type from its name (legacy fallback only)."""
     lower = name.lower()
     if lower in ("stereo out", "master", "main out"):
         return TrackType.MASTER
