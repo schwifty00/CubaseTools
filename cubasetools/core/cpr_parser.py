@@ -111,92 +111,148 @@ class CprParser:
 
         Primary strategy: MixerChannel strip definitions detected via
         Name...String...TRACKNAME...InputFilter pattern, with track types
-        determined from binary section markers (Gruppenspuren, VST-Instrumente).
+        determined from IDString entries (GroupChannel, FxChannel, Audio, etc.).
         Fallback: legacy MAudioTrackEvent etc. markers.
         """
         strips = self._extract_channel_strips()
 
         if strips:
-            # Detect section boundaries for track type classification
-            sections = self._detect_sections()
-
             deduped = self._deduplicate_strips(strips)
             filtered = self._filter_io_section(deduped)
 
-            # Classify track types based on which section they fall in
+            # Classify track types using IDString binary markers
+            self._classify_by_idstring(filtered)
+
             for track, pos in filtered:
-                track.track_type = self._classify_by_section(track.name, pos, sections)
                 track.index = len(self.project.tracks)
                 self.project.tracks.append(track)
                 self._track_positions.append((track, pos))
         else:
             self._extract_legacy_tracks()
 
-    def _detect_sections(self) -> dict[str, int]:
-        """Find section boundaries in the binary data.
+    def _find_channel_idstrings(self) -> list[tuple[int, str]]:
+        """Find all channel type IDString entries in the binary data.
 
-        Cubase stores tracks in sections:
-        - Arrangement area (audio, instrument, MIDI, folder tracks)
-        - Gruppenspuren / Group Tracks (group + FX channel tracks)
-        - VST-Instrumente / VST Instruments (instrument mixer channels)
+        Each mixer channel in Cubase has an IDString field identifying its type:
+        GroupChannel, FxChannel, Audio, SamplerChannel, Synth, MidiChannel,
+        InputChannel, OutputChannel. These are internal engine identifiers
+        that are language/version independent.
         """
-        sections: dict[str, int] = {}
+        results: list[tuple[int, str]] = []
+        known_prefixes = (
+            b"GroupChannel", b"FxChannel", b"Audio",
+            b"SamplerChannel", b"Synth", b"MidiChannel",
+            b"InputChannel", b"OutputChannel",
+        )
 
-        # Search for section headers (German and English)
-        for marker, section_name in [
-            (b"Gruppenspuren", "group_section"),
-            (b"Group Tracks", "group_section"),
-            (b"Group Channel Tracks", "group_section"),
-            (b"VST-Instrumente", "vst_section"),
-            (b"VST Instruments", "vst_section"),
-        ]:
-            pos = self.data.find(marker)
-            if pos != -1 and section_name not in sections:
-                sections[section_name] = pos
+        for m in re.finditer(rb'IDString\x00', self.data):
+            pos = m.start()
+            after = self.data[pos + 9 : pos + 60]
+            sm = re.match(rb'.{0,8}?([\x20-\x7e]{3,40})', after)
+            if sm:
+                val = sm.group(1)
+                if any(val.startswith(p) for p in known_prefixes):
+                    results.append((pos, val.decode("latin-1")))
 
-        return sections
+        results.sort()
+        return results
 
-    def _classify_by_section(
-        self, name: str, pos: int, sections: dict[str, int]
-    ) -> TrackType:
-        """Classify track type based on binary section position."""
-        lower = name.lower()
+    def _classify_by_idstring(
+        self, strips: list[tuple[Track, int]]
+    ) -> None:
+        """Classify track types using IDString entries from the binary data.
 
-        # Master bus
-        if lower in ("stereo out", "master", "main out"):
-            return TrackType.MASTER
+        Algorithm: walk strips and IDStrings in position order. Each IDString
+        is assigned to the most recent preceding strip. Strips without an
+        IDString are inferred from their neighbors.
+        """
+        idstrings = self._find_channel_idstrings()
+        if not idstrings:
+            # No IDStrings found - fall back to name heuristics
+            for track, _ in strips:
+                track.track_type = _classify_track_type(track.name)
+            return
 
-        group_start = sections.get("group_section", float("inf"))
-        vst_start = sections.get("vst_section", float("inf"))
+        strips_sorted = sorted(strips, key=lambda x: x[1])
 
-        # VST Instruments section: these are instrument mixer channels
-        if pos >= vst_start:
-            return TrackType.INSTRUMENT
+        # Step 1: Assign IDStrings to strips.
+        # For each strip, find the first typed IDString between it and the
+        # next strip. The IDString belongs to the strip that precedes it.
+        strip_type_map: dict[int, str] = {}  # strip_pos -> idstring_value
+        id_idx = 0
 
-        # Gruppenspuren section: group + FX channel tracks
-        if pos >= group_start:
-            # Distinguish FX from Group using keywords (works across languages
-            # because effect names are universal: Hall, Reverb, Delay, Chorus etc.)
-            if any(kw in lower for kw in (
-                "hall", "verb", "delay", "flanger", "chorus",
-                "breit", "parallel", "reverb", "echo",
-            )):
-                return TrackType.FX
-            return TrackType.GROUP
+        for i, (_, strip_pos) in enumerate(strips_sorted):
+            next_strip_pos = (
+                strips_sorted[i + 1][1] if i + 1 < len(strips_sorted) else float("inf")
+            )
 
-        # Arrangement section: use name heuristics for sub-classification
-        if lower.startswith(("group", "groupchannel")):
-            return TrackType.GROUP
-        if any(kw in lower for kw in ("grp", "gruppe", "bus")):
-            return TrackType.GROUP
-        if any(kw in lower for kw in (
-            "kontakt", "omnisphere", "diva", "retrologue",
-            "beep", "omnivocal", "halion", "groove agent",
-            "padshop", "backbone",
-        )):
-            return TrackType.INSTRUMENT
+            # Advance past IDStrings that are before/at this strip
+            while id_idx < len(idstrings) and idstrings[id_idx][0] <= strip_pos:
+                id_idx += 1
 
-        return TrackType.AUDIO
+            # Find first typed IDString before the next strip
+            for j in range(id_idx, len(idstrings)):
+                id_pos, id_val = idstrings[j]
+                if id_pos >= next_strip_pos:
+                    break
+                strip_type_map[strip_pos] = id_val
+                break
+
+        # Step 2: Infer types for unmapped strips from neighbors.
+        # An unmapped strip between GroupChannel and FxChannel sections
+        # gets inferred from the next mapped strip's type.
+        for i, (_, strip_pos) in enumerate(strips_sorted):
+            if strip_pos in strip_type_map:
+                continue
+
+            # Look forward for nearest mapped strip
+            next_type = None
+            for j in range(i + 1, len(strips_sorted)):
+                npos = strips_sorted[j][1]
+                if npos in strip_type_map:
+                    next_type = strip_type_map[npos]
+                    break
+
+            # Look backward for nearest mapped strip
+            prev_type = None
+            for j in range(i - 1, -1, -1):
+                ppos = strips_sorted[j][1]
+                if ppos in strip_type_map:
+                    prev_type = strip_type_map[ppos]
+                    break
+
+            # Prefer the next mapped type (boundary strip belongs to next section)
+            if next_type:
+                strip_type_map[strip_pos] = next_type
+            elif prev_type:
+                strip_type_map[strip_pos] = prev_type
+
+        # Step 3: Apply classifications
+        for track, strip_pos in strips:
+            lower_name = track.name.lower()
+
+            # Special case: master bus
+            if lower_name in ("stereo out", "master", "main out"):
+                track.track_type = TrackType.MASTER
+                continue
+
+            id_val = strip_type_map.get(strip_pos, "")
+
+            if id_val.startswith("GroupChannel"):
+                track.track_type = TrackType.GROUP
+            elif id_val.startswith("FxChannel"):
+                track.track_type = TrackType.FX
+            elif id_val.startswith(("SamplerChannel", "Synth")):
+                track.track_type = TrackType.INSTRUMENT
+            elif id_val.startswith("OutputChannel"):
+                track.track_type = TrackType.MASTER
+            elif id_val.startswith("MidiChannel"):
+                track.track_type = TrackType.MIDI
+            elif id_val.startswith("Audio"):
+                track.track_type = TrackType.AUDIO
+            else:
+                # No IDString - fall back to name heuristics
+                track.track_type = _classify_track_type(track.name)
 
     def _filter_io_section(
         self, strips: list[tuple[Track, int]]
