@@ -23,14 +23,33 @@ def to_studiotrack_format(project: CubaseProject) -> dict:
     """
     tracks = []
     for track in project.tracks:
-        track_data = {
+        track_data: dict = {
             "name": track.name,
             "type": track.track_type.value,
             "signal_chain": [],
         }
 
+        # Routing info
+        if track.output_bus:
+            track_data["output_bus"] = track.output_bus
+
+        # Send effects
+        if track.sends:
+            track_data["sends"] = [
+                {
+                    "target": s.target_name,
+                    "level_db": s.level_db,
+                    "enabled": s.enabled,
+                }
+                for s in track.sends
+            ]
+
+        # Audio files on this track
+        if track.audio_files:
+            track_data["audio_files"] = track.audio_files
+
         for plugin in track.plugins:
-            plugin_data = {
+            plugin_data: dict = {
                 "plugin_name": plugin.name,
                 "vendor": plugin.vendor,
                 "bypassed": plugin.bypassed,

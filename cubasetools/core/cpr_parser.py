@@ -6,6 +6,7 @@ audio references, tempo, and other project metadata from binary .cpr files.
 
 from __future__ import annotations
 
+import math
 import re
 import struct
 import xml.etree.ElementTree as ET
@@ -19,6 +20,7 @@ from cubasetools.core.models import (
     CubaseProject,
     Marker,
     PluginInstance,
+    SendSlot,
     Track,
     TrackType,
 )
@@ -57,6 +59,10 @@ class CprParser:
         self._extract_audio_references()
         self._extract_plugins()
         self._extract_markers()
+        bus_table = self._build_bus_uid_table()
+        self._extract_routing(bus_table)
+        self._extract_sends(bus_table)
+        self._extract_audio_per_track()
         self._postprocess()
 
         return self.project
@@ -347,6 +353,7 @@ class CprParser:
             except ValueError:
                 track.track_type = TrackType.UNKNOWN
             track.index = len(self.project.tracks)
+            track.has_content = True  # legacy markers imply actual events
 
             name = self._extract_nearby_string(pos + len(marker_bytes))
             if name:
@@ -627,6 +634,195 @@ class CprParser:
 
             self.project.markers.append(marker)
 
+    # ── Bus UID table, Routing, Sends, Audio per track ─────────────────
+
+    def _build_bus_uid_table(self) -> dict[int, str]:
+        """Build a lookup table mapping bus UIDs to track/bus names.
+
+        Scans for OwnInputBus entries in the binary data. Each entry has a
+        Name (the bus/track name) and a Bus UID (4-byte BE uint32).
+        Returns {uid: name} dict.
+        """
+        table: dict[int, str] = {}
+
+        for m in re.finditer(rb'OwnInputBus\x00', self.data):
+            pos = m.start()
+            region = self.data[pos : pos + 500]
+
+            # Find the Name field — in OwnInputBus it's: Name\x00 + header + ASCII name\x00
+            name_match = re.search(
+                rb'Name\x00.{0,12}?([\x20-\x7e]{2,50})\x00',
+                region,
+                re.DOTALL,
+            )
+            if not name_match:
+                continue
+            bus_name = name_match.group(1).decode("utf-8", errors="ignore").strip()
+
+            # Find Bus UID: pattern is "Bus UID\x00\x00\x01" + 4 zero bytes + 4 bytes UID
+            uid_match = re.search(
+                rb'Bus UID\x00\x00\x01\x00{4}(.{4})',
+                region,
+                re.DOTALL,
+            )
+            if not uid_match:
+                continue
+            uid = struct.unpack(">I", uid_match.group(1))[0]
+            if uid != 0:
+                table[uid] = bus_name
+
+        return table
+
+    def _extract_routing(self, bus_table: dict[int, str]) -> None:
+        """Extract output routing for each track.
+
+        Searches for OutputBusValue near each track's strip position and
+        resolves the target UID via the bus table.
+        """
+        sorted_tracks = sorted(self._track_positions, key=lambda x: x[1])
+        if not sorted_tracks:
+            return
+
+        for i, (track, strip_pos) in enumerate(sorted_tracks):
+            # Region: from this strip to the next strip (or +200KB)
+            next_pos = (
+                sorted_tracks[i + 1][1]
+                if i + 1 < len(sorted_tracks)
+                else strip_pos + 200_000
+            )
+            region_end = min(next_pos, strip_pos + 200_000, len(self.data))
+            region = self.data[strip_pos : region_end]
+
+            # Look for OutputBusValue -> Value\x00\x00\x01\x00\x00\x00\x00 + 4 bytes UID
+            for obv in re.finditer(rb'OutputBus', region):
+                after = region[obv.start() : obv.start() + 200]
+                val_match = re.search(
+                    rb'Value\x00\x00\x01\x00{4}(.{4})',
+                    after,
+                    re.DOTALL,
+                )
+                if val_match:
+                    uid = struct.unpack(">I", val_match.group(1))[0]
+                    if uid in bus_table:
+                        track.output_bus = bus_table[uid]
+                    break
+
+    def _extract_sends(self, bus_table: dict[int, str]) -> None:
+        """Extract send slots for each track.
+
+        Searches for SendFolder within each track's region and extracts
+        up to 8 send slots with target UID and volume.
+        """
+        sorted_tracks = sorted(self._track_positions, key=lambda x: x[1])
+        if not sorted_tracks:
+            return
+
+        for i, (track, strip_pos) in enumerate(sorted_tracks):
+            next_pos = (
+                sorted_tracks[i + 1][1]
+                if i + 1 < len(sorted_tracks)
+                else strip_pos + 200_000
+            )
+            region_end = min(next_pos, strip_pos + 200_000, len(self.data))
+            region = self.data[strip_pos : region_end]
+
+            sf_match = re.search(rb'SendFolder\x00', region)
+            if not sf_match:
+                continue
+
+            # Search within SendFolder region (up to 10KB for 8 slots)
+            send_region = region[sf_match.start() : sf_match.start() + 10240]
+
+            # Each send slot has: Volume -> Value\x00\x00\x04[8 bytes BE double]
+            #                     Output -> Value\x00\x00\x01\x00{4}[4 bytes UID]
+            # Volume appears BEFORE Output in each slot.
+            # Strategy: find each Volume, read the double, then find the next Output.
+            vol_positions = [
+                m.start() for m in re.finditer(rb'Volume\x00', send_region)
+            ]
+            out_positions = [
+                m.start() for m in re.finditer(rb'Output\x00', send_region)
+            ]
+
+            for vol_pos in vol_positions:
+                # Extract BE double: Volume\x00 + header + Value\x00\x00\x04 + 8 bytes
+                vol_area = send_region[vol_pos : vol_pos + 40]
+                dbl_match = re.search(
+                    rb'Value\x00\x00\x04(.{8})', vol_area, re.DOTALL
+                )
+                if not dbl_match:
+                    continue
+                vol_val = struct.unpack(">d", dbl_match.group(1))[0]
+
+                level_db = 0.0
+                if vol_val > 0:
+                    level_db = round(20.0 * math.log10(vol_val / 25856.0), 1) + 0.0
+
+                # Find the next Output after this Volume
+                uid = 0
+                for out_pos in out_positions:
+                    if out_pos > vol_pos:
+                        out_area = send_region[out_pos : out_pos + 40]
+                        uid_match = re.search(
+                            rb'Value\x00\x00\x01\x00{4}(.{4})',
+                            out_area,
+                            re.DOTALL,
+                        )
+                        if uid_match:
+                            uid = struct.unpack(">I", uid_match.group(1))[0]
+                        break
+
+                if uid == 0 or uid not in bus_table:
+                    continue
+
+                send = SendSlot(
+                    target_name=bus_table[uid],
+                    level_db=level_db,
+                    enabled=True,
+                )
+                track.sends.append(send)
+
+                if len(track.sends) >= 8:
+                    break
+
+    def _extract_audio_per_track(self) -> None:
+        """Assign audio file references to their respective tracks.
+
+        For each track region (between consecutive strip positions), find
+        .wav references. Excludes the Pool area (after the Pool marker).
+        """
+        sorted_tracks = sorted(self._track_positions, key=lambda x: x[1])
+        if not sorted_tracks:
+            return
+
+        # Find Pool area start to exclude it
+        pool_pos = self.data.find(b'Pool\x00')
+        if pool_pos == -1:
+            pool_pos = len(self.data)
+
+        for i, (track, strip_pos) in enumerate(sorted_tracks):
+            next_pos = (
+                sorted_tracks[i + 1][1]
+                if i + 1 < len(sorted_tracks)
+                else pool_pos
+            )
+            # Don't search past the Pool area
+            region_end = min(next_pos, pool_pos, len(self.data))
+            if strip_pos >= pool_pos:
+                continue
+
+            region = self.data[strip_pos : region_end]
+            audio_files: list[str] = []
+
+            for wav_match in re.finditer(
+                rb'([\w\-\. ]+\.wav)\x00', region, re.IGNORECASE
+            ):
+                name = wav_match.group(1).decode("utf-8", errors="ignore").strip()
+                if len(name) > 4 and name not in audio_files:
+                    audio_files.append(name)
+
+            track.audio_files = audio_files
+
     # ── Post-processing ──────────────────────────────────────────────────
 
     def _postprocess(self):
@@ -678,18 +874,32 @@ class CprParser:
             if _is_binary_artifact(track.name):
                 continue
 
-            # Track types are already set by _classify_by_section
-            # No name-based reclassification needed
-
             filtered.append(track)
 
-        # Step 4: Reassign indices
-        for i, track in enumerate(filtered):
+        # Step 4: Determine content status and filter empty tracks
+        final: list[Track] = []
+        for track in filtered:
+            # Determine has_content
+            if track.audio_files:
+                track.has_content = True
+            elif track.track_type in (TrackType.INSTRUMENT, TrackType.MIDI):
+                track.has_content = True  # always have MIDI data
+            elif track.track_type in (TrackType.GROUP, TrackType.FX, TrackType.MASTER):
+                track.has_content = True  # mix busses, no "content" needed
+
+            # Filter: skip empty audio tracks without plugins
+            if not track.has_content and not track.plugins:
+                continue
+
+            final.append(track)
+
+        # Step 5: Reassign indices
+        for i, track in enumerate(final):
             track.index = i
             for j, plugin in enumerate(track.plugins):
                 plugin.slot_index = j
 
-        self.project.tracks = filtered
+        self.project.tracks = final
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

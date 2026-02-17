@@ -15,6 +15,16 @@ print()
 
 for t in p.tracks:
     print(f"--- [{t.track_type.value.upper():12s}] {t.name} ---")
+
+    if t.output_bus:
+        print(f"    -> Output: {t.output_bus}")
+
+    if t.sends:
+        sends_str = ", ".join(
+            f"{s.target_name} ({s.level_db:+.1f} dB)" for s in t.sends
+        )
+        print(f"    -> Sends: {sends_str}")
+
     if not t.plugins:
         print("    (keine Plugins)")
     for i, pl in enumerate(t.plugins):
@@ -53,4 +63,8 @@ for t in p.tracks:
                 raw = {k: round(v, 2) for k, v in list(pl.parameters.items())[:5]}
                 if raw:
                     print(f"      Raw: {raw}")
+
+    if t.audio_files:
+        print(f"    Audio: {', '.join(t.audio_files)}")
+
     print()

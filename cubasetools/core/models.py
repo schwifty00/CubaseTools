@@ -52,6 +52,13 @@ class CompressorSettings:
 
 
 @dataclass
+class SendSlot:
+    target_name: str = ""
+    level_db: float = 0.0
+    enabled: bool = True
+
+
+@dataclass
 class PluginInstance:
     name: str = ""
     vendor: str = ""
@@ -76,6 +83,9 @@ class Track:
     color: str = ""
     plugins: list[PluginInstance] = field(default_factory=list)
     audio_files: list[str] = field(default_factory=list)
+    output_bus: str = ""
+    sends: list[SendSlot] = field(default_factory=list)
+    has_content: bool = False
 
 
 @dataclass
