@@ -1,24 +1,24 @@
 # CubaseTools
 
-Liest Cubase-Projektdateien (`.cpr`) und extrahiert Mix-Daten: Plugin-Chains, EQ-Einstellungen, Kompressor-Parameter, Track-Struktur, Routing und Audio-Referenzen.
+Reads Cubase project files (`.cpr`) and extracts mix data: plugin chains, EQ settings, compressor parameters, track structure, routing, and audio references.
 
-Funktioniert mit **Cubase 10 bis 15** (Elements, Artist, Pro).
+Works with **Cubase 10 through 15** (Elements, Artist, Pro).
 
 ## Features
 
-- **Mix Analyzer** — Plugin-Chains pro Track, EQ-Kurven, Kompressor-Settings, Routing und Sends
-- **Dashboard** — Alle Projekte scannen, projektuebergreifende Plugin-Statistiken
-- **Audio Cleanup** — Unbenutzte Audio-Dateien finden und aufraumen
-- **Backup Cleanup** — `.bak` und `.peak` Dateien entfernen
-- **JSON Export** — Mix-Daten als JSON exportieren (CLI oder GUI)
+- **Mix Analyzer** — Plugin chains per track, EQ curves, compressor settings, routing and sends
+- **Dashboard** — Scan all projects, cross-project plugin statistics
+- **Audio Cleanup** — Find and remove unused audio files
+- **Backup Cleanup** — Remove `.bak` and `.peak` files
+- **JSON Export** — Export mix data as JSON (CLI or GUI)
 
 ## Installation
 
-### Voraussetzungen
+### Prerequisites
 
 - **Python 3.12+** — [Download](https://www.python.org/downloads/)
-  - Bei der Installation: **"Add Python to PATH"** aktivieren
-- **Betriebssystem:** Windows 10/11 (primaer), Linux und macOS funktionieren ebenfalls (GUI benoetigt tkinter)
+  - During installation: check **"Add Python to PATH"**
+- **OS:** Windows 10/11 (primary), Linux and macOS also work (GUI requires tkinter)
 
 ### Setup
 
@@ -28,7 +28,7 @@ cd CubaseTools
 python -m venv venv
 ```
 
-Virtuelle Umgebung aktivieren:
+Activate the virtual environment:
 
 ```bash
 # Windows (PowerShell)
@@ -41,15 +41,15 @@ venv\Scripts\activate.bat
 source venv/bin/activate
 ```
 
-Dependencies installieren:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### tkinter auf Linux
+### tkinter on Linux
 
-Falls die GUI nicht startet (`No module named 'tkinter'`):
+If the GUI fails to start (`No module named 'tkinter'`):
 
 ```bash
 # Ubuntu / Debian
@@ -59,38 +59,38 @@ sudo apt install python3-tk
 sudo dnf install python3-tkinter
 ```
 
-## Nutzung
+## Usage
 
-### GUI starten
+### Launch the GUI
 
 ```bash
 python main.py
 ```
 
-Auf Windows alternativ: Doppelklick auf `CubaseTools.bat`.
+On Windows you can also double-click `CubaseTools.bat`.
 
 ### CLI (JSON Export)
 
-Einzelnes Projekt als JSON auf stdout ausgeben:
+Print a single project as JSON to stdout:
 
 ```bash
-python -m cubasetools.cli_export "C:\Projekte\MeinSong\MeinSong.cpr"
+python -m cubasetools.cli_export "C:\Projects\MySong\MySong.cpr"
 ```
 
-In Datei speichern:
+Save to file:
 
 ```bash
-python -m cubasetools.cli_export "MeinSong.cpr" > mix_data.json
+python -m cubasetools.cli_export "MySong.cpr" > mix_data.json
 ```
 
-### Beispiel JSON-Output
+### Example JSON Output
 
 ```json
 {
   "schema_version": "1.0",
   "source": "CubaseTools",
   "project": {
-    "name": "MeinSong",
+    "name": "MySong",
     "cubase_version": "Cubase 13",
     "sample_rate": 48000,
     "bit_depth": 24,
@@ -144,76 +144,76 @@ python -m cubasetools.cli_export "MeinSong.cpr" > mix_data.json
 }
 ```
 
-## GUI-Tabs im Detail
+## GUI Tabs
 
 ### Dashboard
 
-Scan-Verzeichnis waehlen (Standard: `C:\DeepArt`), **Scannen** klicken. Zeigt:
+Choose a scan directory (default: `C:\DeepArt`), click **Scan**. Shows:
 
-- Uebersicht: Anzahl Projekte, Tracks, Plugins, Dateigroesse
-- Projekt-Tabelle mit Einzelstatistiken
-- Top-Plugins ueber alle Projekte hinweg
+- Overview: number of projects, tracks, plugins, total file size
+- Project table with per-project stats
+- Top plugins across all projects
 
 ### Mix Analyzer
 
-`.cpr`-Datei laden, **Analysieren** klicken. Zeigt:
+Load a `.cpr` file, click **Analyze**. Shows:
 
-- **Plugin-Chain** — Baumansicht aller Tracks mit Insert-Plugins
-- **EQ-Kurven** — Ueberlagerte Frequenzgang-Darstellung
-- **Kompressor** — Tabelle mit Threshold, Ratio, Attack, Release pro Track
-- **Plugin-Statistik** — Haeufigkeit + Track-Zuordnung
-- **JSON Export** — Mix-Daten als Datei speichern
+- **Plugin Chain** — Tree view of all tracks with their insert plugins
+- **EQ Curves** — Overlaid frequency response curves
+- **Compressor** — Table with threshold, ratio, attack, release per track
+- **Plugin Stats** — Usage counts with track assignments
+- **JSON Export** — Save mix data to file
 
 ### Audio Cleanup
 
-Projektordner waehlen, **Analysieren** klicken. Findet Audio-Dateien die im `.cpr` nicht referenziert werden.
+Choose a project folder, click **Analyze**. Finds audio files not referenced in the `.cpr`.
 
-- **Verschieben** — Verschiebt in `_unused/` Unterordner (umkehrbar)
-- **Loeschen** — Permanentes Loeschen (mit doppelter Bestaetigung)
+- **Move** — Moves files to an `_unused/` subfolder (reversible)
+- **Delete** — Permanently deletes files (with double confirmation)
 
 ### Backup Cleanup
 
-Scannt nach `.bak` und `.peak` Dateien die Speicherplatz belegen.
+Scans for `.bak` and `.peak` files that take up disk space.
 
-## Unterstuetzte Plugins
+## Supported Plugins
 
-Der Parser erkennt Plugin-Parameter von gaengigen Audio-Plugins und extrahiert EQ/Kompressor-Einstellungen fuer:
+The parser recognizes plugin parameters from common audio plugins and extracts EQ/compressor settings for:
 
-| Hersteller        | Plugins                                   |
+| Vendor            | Plugins                                   |
 | ----------------- | ----------------------------------------- |
 | Solid State Logic | SSL Native Channel Strip 2, SSL E-Channel |
 | Waves             | CLA-76, CLA-2A                            |
-| FabFilter         | Pro-Q 3 (Band-Typen)                      |
-| Steinberg         | Stock-Plugins                             |
+| FabFilter         | Pro-Q 3 (band types)                      |
+| Steinberg         | Stock plugins                             |
 
-Alle anderen VST2/VST3 Plugins werden mit Name, Vendor und Bypass-Status erkannt — ohne spezifische Parameter-Interpretation.
+All other VST2/VST3 plugins are detected with name, vendor, and bypass status — without specific parameter interpretation.
 
-## Projektstruktur
+## Project Structure
 
 ```
 cubasetools/
-  core/         CPR-Parser, Datenmodelle, Plugin-Registry
-  cleanup/      Audio- & Backup-Cleanup-Logik
-  analyzer/     Mix-Analyse (EQ, Kompressor, Plugin-Statistiken)
-  dashboard/    Projekt-Scanner & projektuebergreifende Stats
-  export/       JSON-Export (generisch + StudioTrack-Format)
-  gui/          CustomTkinter GUI (Dark Theme)
-  utils/        Datei-Utilities, Konfiguration
-docs/           Technische Dokumentation (CPR-Format, Architektur)
-tests/          Unit-Tests fuer den Parser
+  core/         CPR parser, data models, plugin registry
+  cleanup/      Audio & backup cleanup logic
+  analyzer/     Mix analysis (EQ, compressor, plugin stats)
+  dashboard/    Project scanner & cross-project stats
+  export/       JSON export (generic + StudioTrack format)
+  gui/          CustomTkinter GUI (dark theme)
+  utils/        File utilities, config
+docs/           Technical documentation (CPR format, architecture)
+tests/          Unit tests for the parser
 ```
 
-## Bekannte Einschraenkungen
+## Known Limitations
 
-- **Proprietaeres Format** — `.cpr` ist undokumentiert. Der Parser nutzt Reverse-Engineering und funktioniert gut mit Cubase 10–15, aber nicht jedes Projekt-Feature wird abgedeckt.
-- **Keine MIDI-Daten** — MIDI-Events werden nicht extrahiert, nur Track-Struktur und Plugins.
-- **Plugin-Parameter** — Detaillierte Parameter-Interpretation nur fuer die oben gelisteten Plugins. Alle anderen werden mit Basis-Infos erkannt.
-- **Grosse Projekte** — Bei Projekten mit 200+ Tracks kann das Parsen einige Sekunden dauern.
+- **Proprietary format** — `.cpr` is undocumented. The parser uses reverse engineering and works well with Cubase 10–15, but not every project feature is covered.
+- **No MIDI data** — MIDI events are not extracted, only track structure and plugins.
+- **Plugin parameters** — Detailed parameter interpretation only for the plugins listed above. All others are detected with basic info.
+- **Large projects** — Projects with 200+ tracks may take a few seconds to parse.
 
 ## StudioTrack Integration
 
-CubaseTools kann als Standalone-Tool genutzt werden, ist aber auch in [StudioTrack](https://github.com/schwifty00/studio-track-commercial) integriert. StudioTrack ruft den CLI-Export als Subprocess auf um Cubase-Projektdaten in die KI-gestuetzte Mix-Analyse einzubeziehen.
+CubaseTools works as a standalone tool but is also integrated into [StudioTrack](https://github.com/schwifty00/studio-track-commercial). StudioTrack calls the CLI export as a subprocess to include Cubase project data in its AI-powered mix analysis.
 
-## Lizenz
+## License
 
-MIT License — siehe [LICENSE](LICENSE).
+MIT License — see [LICENSE](LICENSE).
