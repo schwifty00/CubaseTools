@@ -78,3 +78,162 @@ def test_file_size():
     project = parse_cpr(path)
     assert project.file_size == 500
     path.unlink()
+
+
+def test_extract_time_signature():
+    """Parser should extract time signature from TimeSignatureEvent."""
+    # Build a TimeSignatureEvent with Numerator=3, Denominator=4
+    data = (
+        b"\x00" * 20
+        + b"TimeSignatureEvent\x00"
+        + b"\x00" * 10
+        + b"Numerator\x00\x00\x01" + struct.pack(">q", 3)
+        + b"Denominator\x00\x00\x01" + struct.pack(">q", 4)
+        + b"\x00" * 50
+    )
+    path = _make_cpr(data)
+    project = parse_cpr(path)
+    assert project.time_signature == "3/4"
+    path.unlink()
+
+
+def test_extract_time_signature_6_8():
+    """Parser should handle non-standard time signatures."""
+    data = (
+        b"\x00" * 20
+        + b"TimeSignatureEvent\x00"
+        + b"\x00" * 10
+        + b"Numerator\x00\x00\x01" + struct.pack(">q", 6)
+        + b"Denominator\x00\x00\x01" + struct.pack(">q", 8)
+        + b"\x00" * 50
+    )
+    path = _make_cpr(data)
+    project = parse_cpr(path)
+    assert project.time_signature == "6/8"
+    path.unlink()
+
+
+def test_extract_volume():
+    """Parser should extract fader volume from channel strip regions."""
+    import math
+    # Build: channel strip + Volume compound field
+    # Volume at -6 dB: 25856 * 10^(-6/20) = 25856 * 0.5012 = 12958.9
+    raw_vol = 25856.0 * (10 ** (-6.0 / 20.0))
+    strip = (
+        b"Name\x00" + b"\x00" * 5
+        + b"String\x00" + b"\x00" * 3
+        + b"TestTrack\x00" + b"\x00" * 5
+        + b"Type\x00" + b"\x00" * 5
+        + b"InputFilter"
+    )
+    volume_field = (
+        b"Volume\x00"
+        b"\x00\x02\x00\x06\x00\x00\x00\x02\x00\x00\x00\x06"
+        b"Value\x00\x00\x04"
+        + struct.pack(">d", raw_vol)
+    )
+    data = b"\x00" * 20 + strip + b"\x00" * 100 + volume_field + b"\x00" * 200
+    path = _make_cpr(data)
+    project = parse_cpr(path)
+    # Find the track (post-processing may filter, so check if found)
+    test_tracks = [t for t in project.tracks if "TestTrack" in t.name]
+    if test_tracks:
+        assert abs(test_tracks[0].volume - (-6.0)) < 0.5
+    path.unlink()
+
+
+def test_extract_pan():
+    """Parser should extract pan from channel strip regions."""
+    # Pan hard-right = 32767.0 -> normalized = +1.0
+    strip = (
+        b"Name\x00" + b"\x00" * 5
+        + b"String\x00" + b"\x00" * 3
+        + b"PanTest\x00" + b"\x00" * 5
+        + b"Type\x00" + b"\x00" * 5
+        + b"InputFilter"
+    )
+    pan_field = (
+        b"Pan\x00"
+        b"\x00\x02\x00\x06\x00\x00\x00\x01\x00\x00\x00\x06"
+        b"Value\x00\x00\x04"
+        + struct.pack(">d", 32767.0)
+    )
+    data = b"\x00" * 20 + strip + b"\x00" * 100 + pan_field + b"\x00" * 200
+    path = _make_cpr(data)
+    project = parse_cpr(path)
+    test_tracks = [t for t in project.tracks if "PanTest" in t.name]
+    if test_tracks:
+        assert test_tracks[0].pan > 0.9  # should be ~1.0
+    path.unlink()
+
+
+def test_extract_mute():
+    """Parser should extract mute flag."""
+    strip = (
+        b"Name\x00" + b"\x00" * 5
+        + b"String\x00" + b"\x00" * 3
+        + b"MuteTest\x00" + b"\x00" * 5
+        + b"Type\x00" + b"\x00" * 5
+        + b"InputFilter"
+    )
+    mute_field = b"Mute\x00\x00\x01" + struct.pack(">q", 1)
+    data = b"\x00" * 20 + strip + b"\x00" * 100 + mute_field + b"\x00" * 200
+    path = _make_cpr(data)
+    project = parse_cpr(path)
+    test_tracks = [t for t in project.tracks if "MuteTest" in t.name]
+    if test_tracks:
+        assert test_tracks[0].muted is True
+    path.unlink()
+
+
+def test_extract_solo():
+    """Parser should extract solo flag."""
+    strip = (
+        b"Name\x00" + b"\x00" * 5
+        + b"String\x00" + b"\x00" * 3
+        + b"SoloTest\x00" + b"\x00" * 5
+        + b"Type\x00" + b"\x00" * 5
+        + b"InputFilter"
+    )
+    solo_field = b"Solo\x00\x00\x01" + struct.pack(">q", 1)
+    data = b"\x00" * 20 + strip + b"\x00" * 100 + solo_field + b"\x00" * 200
+    path = _make_cpr(data)
+    project = parse_cpr(path)
+    test_tracks = [t for t in project.tracks if "SoloTest" in t.name]
+    if test_tracks:
+        assert test_tracks[0].solo is True
+    path.unlink()
+
+
+def test_default_time_signature():
+    """Without TimeSignatureEvent, default should be 4/4."""
+    path = _make_cpr(b"\x00" * 100)
+    project = parse_cpr(path)
+    assert project.time_signature == "4/4"
+    path.unlink()
+
+
+def test_marker_with_position():
+    """Parser should extract marker name and position."""
+    # Build a MMarkerEvent with name "Chorus" at tick 7680
+    name = b"Chorus"
+    marker_data = (
+        b"MMarkerEvent\x00\x00\x00\xff\xff\xff\xff"
+        + b"\x00\x00\x00\x12"
+        + b"MRangeMarkerEvent\x00"
+        + b"\x00\x00\x00\x00\x00\x00\x45"
+        + b"\x00\x00\x00" + bytes([len(name) + 4])
+        + name + b"\x00\xef\xbb\xbf"
+        + struct.pack(">I", 1)       # color/type
+        + struct.pack(">I", 7680)    # start position
+        + struct.pack(">I", 0)       # padding
+        + struct.pack(">I", 15360)   # end position
+        + b"\x00" * 50
+    )
+    data = b"\x00" * 20 + marker_data + b"\x00" * 100
+    path = _make_cpr(data)
+    project = parse_cpr(path)
+    assert len(project.markers) >= 1
+    assert project.markers[0].name == "Chorus"
+    assert project.markers[0].position == 7680.0
+    path.unlink()

@@ -31,16 +31,29 @@ def project_to_dict(project: CubaseProject) -> dict:
 
 
 def _track_to_dict(track) -> dict:
-    return {
+    d = {
         "name": track.name,
         "type": track.track_type.value,
         "index": track.index,
-        "volume": track.volume,
+        "volume_db": track.volume,
         "pan": track.pan,
         "muted": track.muted,
         "solo": track.solo,
+        "has_content": track.has_content,
         "plugins": [_plugin_to_dict(p) for p in track.plugins],
     }
+    if track.color:
+        d["color"] = track.color
+    if track.output_bus:
+        d["output_bus"] = track.output_bus
+    if track.sends:
+        d["sends"] = [
+            {"target": s.target_name, "level_db": s.level_db, "enabled": s.enabled}
+            for s in track.sends
+        ]
+    if track.audio_files:
+        d["audio_files"] = track.audio_files
+    return d
 
 
 def _plugin_to_dict(plugin) -> dict:

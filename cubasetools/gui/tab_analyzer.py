@@ -96,10 +96,18 @@ class AnalyzerTab:
         )
         self.content_tabs.pack(fill="both", expand=True, padx=15, pady=(0, 15))
 
+        tab_mixer = self.content_tabs.add("Mixer")
         tab_chain = self.content_tabs.add("Plugin-Chain")
         tab_eq = self.content_tabs.add("EQ-Kurven")
         tab_comp = self.content_tabs.add("Kompressor")
         tab_stats = self.content_tabs.add("Plugin-Statistik")
+
+        # Mixer overview table
+        self.mixer_table = PluginTable(
+            tab_mixer,
+            columns=["Track", "Typ", "Volume", "Pan", "M", "S", "Output", "Sends", "Plugins"],
+        )
+        self.mixer_table.pack(fill="both", expand=True)
 
         # Plugin chain tree
         self.project_tree = ProjectTree(tab_chain)
@@ -164,7 +172,9 @@ class AnalyzerTab:
                 self.export_btn.configure(state="normal")
                 self.status_var.set(
                     f"{project.project_name}: {project.track_count} Tracks, "
-                    f"{project.plugin_count} Plugins"
+                    f"{project.plugin_count} Plugins  |  "
+                    f"{project.tempo} BPM, {project.time_signature}, "
+                    f"{project.sample_rate} Hz"
                 )
 
             self.parent.after(0, update_ui)
@@ -179,6 +189,26 @@ class AnalyzerTab:
             )
 
     def _display_results(self, project: CubaseProject):
+        # Mixer overview
+        mixer_rows = []
+        for t in project.tracks:
+            vol = f"{t.volume:+.1f}" if t.volume != 0 else "0.0"
+            if t.pan < -0.01:
+                pan = f"L{abs(t.pan)*100:.0f}"
+            elif t.pan > 0.01:
+                pan = f"R{t.pan*100:.0f}"
+            else:
+                pan = "C"
+            mute = "M" if t.muted else ""
+            solo = "S" if t.solo else ""
+            out = t.output_bus or "-"
+            sends = ", ".join(s.target_name for s in t.sends) if t.sends else "-"
+            plugins = str(len(t.plugins)) if t.plugins else "-"
+            mixer_rows.append([
+                t.name, t.track_type.value, vol, pan, mute, solo, out, sends, plugins,
+            ])
+        self.mixer_table.set_data(mixer_rows)
+
         # Plugin chain tree
         self.project_tree.load_project(project)
 

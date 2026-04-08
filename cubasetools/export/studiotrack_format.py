@@ -26,8 +26,15 @@ def to_studiotrack_format(project: CubaseProject) -> dict:
         track_data: dict = {
             "name": track.name,
             "type": track.track_type.value,
+            "volume_db": track.volume,
+            "pan": track.pan,
+            "muted": track.muted,
+            "solo": track.solo,
             "signal_chain": [],
         }
+
+        if track.color:
+            track_data["color"] = track.color
 
         # Routing info
         if track.output_bus:

@@ -55,6 +55,7 @@ class CprParser:
         self._extract_version()
         self._extract_sample_rate()
         self._extract_tempo()
+        self._extract_time_signature()
         self._extract_tracks()
         self._extract_audio_references()
         self._extract_plugins()
@@ -63,6 +64,9 @@ class CprParser:
         self._extract_routing(bus_table)
         self._extract_sends(bus_table)
         self._extract_audio_per_track()
+        self._extract_volume_pan()
+        self._extract_mute_solo()
+        self._extract_track_colors()
         self._postprocess()
 
         return self.project
@@ -70,7 +74,20 @@ class CprParser:
     # ── Metadata extraction ──────────────────────────────────────────────
 
     def _extract_version(self):
-        """Find Cubase version string."""
+        """Find Cubase version string.
+
+        Two formats:
+        - Modern (Cubase 12+): 'Version NN.N.N\\x00' in the file header
+        - Legacy: 'Cubase NN\\x00' ASCII markers
+        """
+        # Modern format: "Version X.Y.Z" near start of file
+        vm = re.search(rb'Version (\d+\.\d+\.\d+)\x00', self.data[:2000])
+        if vm:
+            ver_num = vm.group(1).decode("utf-8", errors="ignore")
+            self.project.cubase_version = f"Cubase {ver_num}"
+            return
+
+        # Legacy format: "Cubase 10" etc.
         for marker in VERSION_MARKERS:
             pos = self.data.find(marker)
             if pos != -1:
@@ -82,33 +99,65 @@ class CprParser:
                     return
 
     def _extract_sample_rate(self):
-        """Try to find sample rate."""
+        """Try to find sample rate.
+
+        Modern Cubase stores sample rate as a BE double in a 'Float' sub-field
+        within the binary SampleRate structure (not in XML preset data).
+        Falls back to int32 search.
+        """
         known_rates = [44100, 48000, 88200, 96000, 176400, 192000]
-        for marker in [b"SampleRate", b"Record Format", b"SRateForAudioIO"]:
-            pos = self.data.find(marker)
-            if pos == -1:
+
+        # Search ALL SampleRate occurrences, skip XML ones
+        for m in re.finditer(rb'SampleRate', self.data):
+            pos = m.start()
+            after = self.data[pos : pos + 30]
+            # Skip XML occurrences (contain > or < nearby)
+            if b'>' in after[:15] or b'<' in after[:15]:
                 continue
-            region = self.data[pos : pos + 100]
+            region = self.data[pos : pos + 200]
+            float_match = re.search(
+                rb'Float\x00\x00\x04(.{8})', region, re.DOTALL
+            )
+            if float_match:
+                val = struct.unpack(">d", float_match.group(1))[0]
+                rounded = int(round(val))
+                if rounded in known_rates:
+                    self.project.sample_rate = rounded
+                    return
+            # Legacy: int32 near this marker
             for rate in known_rates:
                 if struct.pack("<I", rate) in region or struct.pack(">I", rate) in region:
                     self.project.sample_rate = rate
                     return
 
     def _extract_tempo(self):
-        """Try to extract tempo from the project."""
-        for marker in [b"TempoEvent", b"MTempoTrackEvent"]:
-            pos = self.data.find(marker)
-            if pos == -1:
-                continue
-            region = self.data[pos : pos + 200]
-            for offset in range(0, len(region) - 8, 4):
-                try:
-                    val = struct.unpack_from("<d", region, offset)[0]
-                    if 30.0 < val < 300.0:
-                        self.project.tempo = round(val, 2)
-                        return
-                except struct.error:
-                    continue
+        """Try to extract tempo from the project.
+
+        Strategy 1: Find MTempoEvent with a BPM named-field double.
+        Strategy 2: Scan MTempoTrackEvent header for embedded BPM double.
+        If neither finds a value, the project uses the default 120 BPM.
+        """
+        # Strategy 1: MTempoEvent > BPM named field (most reliable)
+        m = re.search(
+            rb'MTempoEvent.*?BPM\x00\x00\x04(.{8})',
+            self.data,
+            re.DOTALL,
+        )
+        if m:
+            val = struct.unpack(">d", m.group(1))[0]
+            if 20.0 < val < 400.0:
+                self.project.tempo = round(val, 2)
+                return
+
+        # Strategy 2: Scan MTempoTrackEvent header for embedded double
+        pos = self.data.find(b"MTempoTrackEvent")
+        if pos != -1:
+            region = self.data[pos : pos + 500]
+            for offset in range(17, len(region) - 8):
+                val = struct.unpack_from(">d", region, offset)[0]
+                if 20.0 < val < 400.0:
+                    self.project.tempo = round(val, 2)
+                    return
 
     # ── Track extraction ─────────────────────────────────────────────────
 
@@ -620,17 +669,40 @@ class CprParser:
     # ── Markers ──────────────────────────────────────────────────────────
 
     def _extract_markers(self):
-        """Extract markers from the project."""
+        """Extract markers from the project.
+
+        Marker structure after the event header:
+          - name_len (4 bytes) + name + null + BOM
+          - color/type (4 bytes BE int32)
+          - start position (4 bytes BE uint32, in PPQ ticks)
+          - padding (4 bytes, zero)
+          - end position (4 bytes BE uint32, for range markers)
+
+        The name is found via regex between the event header and BOM.
+        """
         for match in re.finditer(rb'MMarkerEvent', self.data):
             pos = match.start()
+            region = self.data[pos : pos + 200]
+
             marker = Marker()
             marker.marker_id = len(self.project.markers) + 1
 
-            name = self._extract_nearby_string(pos)
-            if name:
-                marker.name = name
+            # Extract name: look for string before BOM marker
+            name_match = re.search(
+                rb'\x00\x00\x00[\x02-\x40]([\x20-\x7e]+)\x00\xef\xbb\xbf',
+                region,
+            )
+            if name_match:
+                marker.name = name_match.group(1).decode("utf-8", errors="ignore")
+                # Position data follows BOM + 4 bytes after the name
+                after_bom = region[name_match.end():]
+                if len(after_bom) >= 8:
+                    # Skip color/type (4 bytes), read start position
+                    start_ticks = struct.unpack(">I", after_bom[4:8])[0]
+                    marker.position = float(start_ticks)
             else:
-                marker.name = f"Marker {marker.marker_id}"
+                name = self._extract_nearby_string(pos)
+                marker.name = name if name else f"Marker {marker.marker_id}"
 
             self.project.markers.append(marker)
 
@@ -822,6 +894,201 @@ class CprParser:
                     audio_files.append(name)
 
             track.audio_files = audio_files
+
+    # ── Time Signature ──────────────────────────────────────────────────
+
+    def _extract_time_signature(self):
+        """Extract time signature from TimeSignatureEvent entries.
+
+        Structure: TimeSignatureEvent contains Numerator and Denominator
+        fields as int64 values following the standard named-field encoding.
+        """
+        pos = self.data.find(b'TimeSignatureEvent')
+        if pos == -1:
+            return
+
+        region = self.data[pos : pos + 300]
+
+        num_match = re.search(
+            rb'Numerator\x00\x00\x01(.{8})',
+            region,
+            re.DOTALL,
+        )
+        den_match = re.search(
+            rb'Denominator\x00\x00\x01(.{8})',
+            region,
+            re.DOTALL,
+        )
+
+        if num_match and den_match:
+            numerator = struct.unpack(">q", num_match.group(1))[0]
+            denominator = struct.unpack(">q", den_match.group(1))[0]
+            if 1 <= numerator <= 32 and denominator in (1, 2, 4, 8, 16, 32):
+                self.project.time_signature = f"{numerator}/{denominator}"
+
+    # ── Volume, Pan, Mute, Solo ─────────────────────────────────────────
+
+    _VOLUME_UNITY = 25856.0  # 0 dB fader position
+    _PAN_CENTER = 16383.5    # center pan position
+
+    def _extract_volume_pan(self):
+        """Extract fader volume and pan for each track.
+
+        Volume: compound field with Value as BE double (0..32767, unity=25856)
+        Pan: compound field with Value as BE double (0..32767, center=16383.5)
+        """
+        sorted_tracks = sorted(self._track_positions, key=lambda x: x[1])
+        if not sorted_tracks:
+            return
+
+        for i, (track, strip_pos) in enumerate(sorted_tracks):
+            next_pos = (
+                sorted_tracks[i + 1][1]
+                if i + 1 < len(sorted_tracks)
+                else strip_pos + 200_000
+            )
+            region_end = min(next_pos, strip_pos + 200_000, len(self.data))
+            region = self.data[strip_pos : region_end]
+
+            # Volume: compound with fixed header then Value double
+            # Pattern: Volume\x00 \x00\x02 \x00\x06 \x00\x00\x00\x02
+            #          \x00\x00\x00\x06 Value\x00 \x00\x04 <8 bytes>
+            vol_match = re.search(
+                rb'Volume\x00\x00\x02\x00\x06\x00\x00\x00\x02\x00\x00\x00\x06Value\x00\x00\x04(.{8})',
+                region,
+                re.DOTALL,
+            )
+            if vol_match:
+                raw = struct.unpack(">d", vol_match.group(1))[0]
+                if raw > 0:
+                    track.volume = round(
+                        20.0 * math.log10(raw / self._VOLUME_UNITY), 1
+                    )
+                elif raw == 0:
+                    track.volume = -100.0  # -inf dB
+
+            # Pan: compound with fixed header then Value double
+            # Pattern: Pan\x00 \x00\x02 \x00\x06 \x00\x00\x00\x01
+            #          \x00\x00\x00\x06 Value\x00 \x00\x04 <8 bytes>
+            pan_match = re.search(
+                rb'Pan\x00\x00\x02\x00\x06\x00\x00\x00\x01\x00\x00\x00\x06Value\x00\x00\x04(.{8})',
+                region,
+                re.DOTALL,
+            )
+            if pan_match:
+                raw = struct.unpack(">d", pan_match.group(1))[0]
+                track.pan = round(
+                    (raw - self._PAN_CENTER) / self._PAN_CENTER, 3
+                )
+
+    def _extract_mute_solo(self):
+        """Extract mute and solo status for each track.
+
+        Mute/Solo: int field (0=off, 1=on) following the named-field pattern.
+        """
+        sorted_tracks = sorted(self._track_positions, key=lambda x: x[1])
+        if not sorted_tracks:
+            return
+
+        for i, (track, strip_pos) in enumerate(sorted_tracks):
+            next_pos = (
+                sorted_tracks[i + 1][1]
+                if i + 1 < len(sorted_tracks)
+                else strip_pos + 200_000
+            )
+            region_end = min(next_pos, strip_pos + 200_000, len(self.data))
+            region = self.data[strip_pos : region_end]
+
+            mute_match = re.search(
+                rb'Mute\x00\x00\x01(.{8})',
+                region,
+                re.DOTALL,
+            )
+            if mute_match:
+                val = struct.unpack(">q", mute_match.group(1))[0]
+                track.muted = val == 1
+
+            solo_match = re.search(
+                rb'Solo\x00\x00\x01(.{8})',
+                region,
+                re.DOTALL,
+            )
+            if solo_match:
+                val = struct.unpack(">q", solo_match.group(1))[0]
+                track.solo = val == 1
+
+    # ── Track Colors ────────────────────────────────────────────────────
+
+    def _extract_track_colors(self):
+        """Extract track colors from the project color palette.
+
+        The palette is stored in UColorSet as repeated ARGB entries.
+        Track color indices are embedded in legacy track event headers
+        (after the BOM marker). Index -1 means default/no color.
+        """
+        palette = self._extract_color_palette()
+        if not palette:
+            return
+
+        sorted_tracks = sorted(self._track_positions, key=lambda x: x[1])
+        if not sorted_tracks:
+            return
+
+        # Build (position, color_index) from legacy track markers
+        color_map = self._extract_color_indices()
+
+        for track, strip_pos in sorted_tracks:
+            # Find the closest color index before or near this strip
+            best_idx = -1
+            best_dist = float("inf")
+            for cpos, cidx in color_map:
+                dist = abs(cpos - strip_pos)
+                if dist < best_dist and dist < 200_000:
+                    best_dist = dist
+                    best_idx = cidx
+
+            # Only assign if the index is valid and not the default (0)
+            # Index 0 is often just "no explicit color set" in Cubase
+            if 1 <= best_idx < len(palette):
+                track.color = palette[best_idx]
+
+    def _extract_color_palette(self) -> list[str]:
+        """Extract the project color palette from UColorSet.
+
+        Returns list of hex color strings like '#E63737'.
+        """
+        palette: list[str] = []
+        for m in re.finditer(rb'Color 16\x00\xef\xbb\xbf(.{4})', self.data, re.DOTALL):
+            argb = struct.unpack(">I", m.group(1))[0]
+            r = (argb >> 16) & 0xFF
+            g = (argb >> 8) & 0xFF
+            b = argb & 0xFF
+            palette.append(f"#{r:02X}{g:02X}{b:02X}")
+        return palette
+
+    def _extract_color_indices(self) -> list[tuple[int, int]]:
+        """Find track color indices from legacy track event headers.
+
+        Returns list of (position, color_index) tuples.
+        """
+        results: list[tuple[int, int]] = []
+        track_event_markers = [
+            b'MAudioTrackEvent', b'MInstrumentTrackEvent',
+            b'MMidiTrackEvent', b'MFXChannelTrackEvent',
+            b'MGroupChannelTrackEvent', b'MSamplerTrackEvent',
+            b'MFolderTrackEvent',
+        ]
+        for marker in track_event_markers:
+            for m in re.finditer(re.escape(marker), self.data):
+                pos = m.start()
+                # Search for BOM marker after the event name
+                region = self.data[pos : pos + 500]
+                bom_pos = region.find(b'\xef\xbb\xbf')
+                if bom_pos != -1 and bom_pos + 7 <= len(region):
+                    idx_bytes = region[bom_pos + 3 : bom_pos + 7]
+                    color_idx = struct.unpack(">i", idx_bytes)[0]
+                    results.append((pos, color_idx))
+        return results
 
     # ── Post-processing ──────────────────────────────────────────────────
 

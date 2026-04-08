@@ -9,12 +9,20 @@ cpr_path = sys.argv[1] if len(sys.argv) > 1 else r"C:\DeepArt\Projekt 25\Proviso
 p = parse_cpr(Path(cpr_path))
 
 print(f"=== PROJEKT: {p.project_name} ===")
-print(f"Sample Rate: {p.sample_rate} Hz | Tempo: {p.tempo} BPM")
+print(f"Sample Rate: {p.sample_rate} Hz | Tempo: {p.tempo} BPM | Time Sig: {p.time_signature}")
 print(f"Tracks: {p.track_count} | Plugins: {p.plugin_count} | Audio: {len(p.referenced_audio)}")
 print()
 
 for t in p.tracks:
-    print(f"--- [{t.track_type.value.upper():12s}] {t.name} ---")
+    vol_str = f"{t.volume:+.1f} dB" if t.volume != 0 else "0.0 dB"
+    pan_str = f"L{abs(t.pan)*100:.0f}" if t.pan < -0.01 else f"R{t.pan*100:.0f}" if t.pan > 0.01 else "C"
+    flags = ""
+    if t.muted:
+        flags += " [MUTE]"
+    if t.solo:
+        flags += " [SOLO]"
+    color_str = f" {t.color}" if t.color else ""
+    print(f"--- [{t.track_type.value.upper():12s}] {t.name}  |  {vol_str}  {pan_str}{flags}{color_str} ---")
 
     if t.output_bus:
         print(f"    -> Output: {t.output_bus}")

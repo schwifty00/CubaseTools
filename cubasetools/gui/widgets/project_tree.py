@@ -42,13 +42,38 @@ class ProjectTree(ctk.CTkScrollableFrame):
                 anchor="w",
             ).pack(side="left")
 
+            # Track name with mute/solo indicators
+            name_text = track.name
+            if track.muted:
+                name_text += "  [M]"
+            if track.solo:
+                name_text += "  [S]"
+
             ctk.CTkLabel(
                 header,
-                text=track.name,
+                text=name_text,
                 font=(theme.FONT_FAMILY, theme.FONT_SIZE_BODY, "bold"),
-                text_color=theme.TEXT_PRIMARY,
+                text_color=theme.ACCENT_ERROR if track.muted else theme.TEXT_PRIMARY,
                 anchor="w",
             ).pack(side="left", fill="x", expand=True)
+
+            # Volume / Pan info on the right
+            vol_str = f"{track.volume:+.1f} dB" if track.volume != 0 else "0.0 dB"
+            if track.pan < -0.01:
+                pan_str = f"L{abs(track.pan)*100:.0f}"
+            elif track.pan > 0.01:
+                pan_str = f"R{track.pan*100:.0f}"
+            else:
+                pan_str = "C"
+
+            ctk.CTkLabel(
+                header,
+                text=f"{vol_str}  {pan_str}",
+                font=(theme.FONT_MONO, theme.FONT_SIZE_SMALL),
+                text_color=theme.TEXT_MUTED,
+                width=100,
+                anchor="e",
+            ).pack(side="right", padx=(5, 0))
 
             plugin_count = len(track.plugins)
             if plugin_count:
@@ -58,6 +83,26 @@ class ProjectTree(ctk.CTkScrollableFrame):
                     font=(theme.FONT_FAMILY, theme.FONT_SIZE_SMALL),
                     text_color=theme.TEXT_MUTED,
                 ).pack(side="right")
+
+            # Routing info
+            routing_parts = []
+            if track.output_bus:
+                routing_parts.append(f"Out: {track.output_bus}")
+            if track.sends:
+                sends_str = ", ".join(
+                    f"{s.target_name} ({s.level_db:+.1f})" for s in track.sends
+                )
+                routing_parts.append(f"Sends: {sends_str}")
+            if routing_parts:
+                routing_frame = ctk.CTkFrame(track_frame, fg_color="transparent")
+                routing_frame.pack(fill="x", padx=(30, 8), pady=(0, 2))
+                ctk.CTkLabel(
+                    routing_frame,
+                    text=" | ".join(routing_parts),
+                    font=(theme.FONT_MONO, theme.FONT_SIZE_SMALL - 1),
+                    text_color=theme.ACCENT_WARNING,
+                    anchor="w",
+                ).pack(side="left")
 
             # Plugin list
             for plugin in track.plugins:
