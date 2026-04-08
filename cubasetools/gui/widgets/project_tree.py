@@ -118,9 +118,13 @@ class ProjectTree(ctk.CTkScrollableFrame):
                     width=15,
                 ).pack(side="left")
 
+                plugin_text = plugin.name or "Unknown Plugin"
+                if plugin.preset_name:
+                    plugin_text += f"  [{plugin.preset_name}]"
+
                 ctk.CTkLabel(
                     plugin_frame,
-                    text=plugin.name or "Unknown Plugin",
+                    text=plugin_text,
                     font=(theme.FONT_FAMILY, theme.FONT_SIZE_SMALL),
                     text_color=theme.TEXT_SECONDARY,
                     anchor="w",

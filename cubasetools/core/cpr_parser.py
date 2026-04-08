@@ -146,7 +146,8 @@ class CprParser:
 
         Strategy 1: Find MTempoEvent with a BPM named-field double.
         Strategy 2: Scan MTempoTrackEvent header for embedded BPM double.
-        If neither finds a value, the project uses the default 120 BPM.
+        Strategy 3: MusicalTempo media attribute (audio file tempo tag).
+        If none finds a value, the project uses the default 120 BPM.
         """
         # Strategy 1: MTempoEvent > BPM named field (most reliable)
         m = re.search(
@@ -169,6 +170,18 @@ class CprParser:
                 if 20.0 < val < 400.0:
                     self.project.tempo = round(val, 2)
                     return
+
+        # Strategy 3: MusicalTempo media attribute as fallback
+        m = re.search(
+            rb'MusicalTempo.*?Float\x00\x00\x04(.{8})',
+            self.data,
+            re.DOTALL,
+        )
+        if m:
+            val = struct.unpack(">d", m.group(1))[0]
+            if 20.0 < val < 400.0:
+                self.project.tempo = round(val, 1)
+                return
 
     # ── Track extraction ─────────────────────────────────────────────────
 

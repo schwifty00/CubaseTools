@@ -13,6 +13,9 @@ ACCENT_SUCCESS = "#03dac6"
 ACCENT_WARNING = "#cf6679"
 ACCENT_INFO = "#64b5f6"
 
+# Status colors
+ACCENT_ERROR = "#cf6679"
+
 # Text colors
 TEXT_PRIMARY = "#ffffff"
 TEXT_SECONDARY = "#cccccc"
