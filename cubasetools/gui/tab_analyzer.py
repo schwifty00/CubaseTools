@@ -247,7 +247,7 @@ class AnalyzerTab:
             elif t.pan > 0.01:
                 pan = f"R{t.pan*100:.0f}"
             else:
-                pan = "C"
+                pan = "-"
             mute = "M" if t.muted else ""
             solo = "S" if t.solo else ""
             mon = "Mon" if t.monitor else ""
