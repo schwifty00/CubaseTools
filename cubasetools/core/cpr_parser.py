@@ -336,24 +336,31 @@ class CprParser:
     def _filter_io_section(
         self, strips: list[tuple[Track, int]]
     ) -> list[tuple[Track, int]]:
-        """Remove hardware I/O channels, keeping only Stereo Out."""
+        """Remove hardware I/O channels, keeping only Stereo Out.
+
+        Uses the LARGEST gap between consecutive strips as the I/O boundary,
+        not the first gap > 1MB. Large VSTi plugins (Kontakt etc.) can create
+        multi-MB gaps within the normal track section.
+        """
         if len(strips) < 2:
             return strips
 
-        # Find the gap: if distance between consecutive strips > 1MB,
-        # everything after the gap is the I/O section
-        result: list[tuple[Track, int]] = []
-        io_start = None
-
+        # Find the largest gap — that's the I/O section boundary
+        max_gap = 0
+        max_gap_idx = -1
         for i in range(len(strips) - 1):
             _, pos_a = strips[i]
             _, pos_b = strips[i + 1]
-            if pos_b - pos_a > 1_000_000:
-                io_start = i + 1
-                break
+            gap = pos_b - pos_a
+            if gap > max_gap:
+                max_gap = gap
+                max_gap_idx = i
 
-        if io_start is None:
-            return strips  # No gap found, keep all
+        # Only treat as I/O boundary if the gap is significant (> 5 MB)
+        if max_gap < 5_000_000:
+            return strips  # No clear I/O boundary
+
+        io_start = max_gap_idx + 1
 
         # Keep everything before the gap
         result = strips[:io_start]
