@@ -18,6 +18,10 @@ def project_to_dict(project: CubaseProject) -> dict:
         "bit_depth": project.bit_depth,
         "tempo": project.tempo,
         "time_signature": project.time_signature,
+        "cursor_position": project.cursor_position,
+        "cycle_on": project.cycle_on,
+        "cycle_left": project.cycle_left,
+        "cycle_right": project.cycle_right,
         "file_size": project.file_size,
         "track_count": project.track_count,
         "plugin_count": project.plugin_count,
@@ -39,6 +43,8 @@ def _track_to_dict(track) -> dict:
         "pan": track.pan,
         "muted": track.muted,
         "solo": track.solo,
+        "monitor": track.monitor,
+        "folder": track.folder,
         "has_content": track.has_content,
         "plugins": [_plugin_to_dict(p) for p in track.plugins],
     }
@@ -62,6 +68,7 @@ def _plugin_to_dict(plugin) -> dict:
         "vendor": plugin.vendor,
         "slot_index": plugin.slot_index,
         "bypassed": plugin.bypassed,
+        "preset_name": plugin.preset_name,
         "parameters": plugin.parameters,
     }
 

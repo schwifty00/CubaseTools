@@ -17,8 +17,12 @@ from cubasetools.core.constants import (
     VERSION_MARKERS,
 )
 from cubasetools.core.models import (
+    AutomationLane,
+    AutomationPoint,
     CubaseProject,
     Marker,
+    MidiNote,
+    MidiPart,
     PluginInstance,
     SendSlot,
     Track,
@@ -54,11 +58,14 @@ class CprParser:
 
         self._extract_version()
         self._extract_sample_rate()
+        self._extract_bit_depth()
         self._extract_tempo()
         self._extract_time_signature()
+        self._extract_transport()
         self._extract_tracks()
         self._extract_audio_references()
         self._extract_plugins()
+        self._extract_plugin_presets()
         self._extract_markers()
         bus_table = self._build_bus_uid_table()
         self._extract_routing(bus_table)
@@ -66,7 +73,11 @@ class CprParser:
         self._extract_audio_per_track()
         self._extract_volume_pan()
         self._extract_mute_solo()
+        self._extract_monitor()
         self._extract_track_colors()
+        self._extract_folder_hierarchy()
+        self._extract_automation()
+        self._extract_midi()
         self._postprocess()
 
         return self.project
@@ -1098,6 +1109,333 @@ class CprParser:
                     color_idx = struct.unpack(">i", idx_bytes)[0]
                     results.append((pos, color_idx))
         return results
+
+    # ── Bit Depth ────────────────────────────────────────────────────────
+
+    def _extract_bit_depth(self):
+        """Extract bit depth from AudioSampleSize / SampleSize structure.
+
+        Pattern: SampleSize > Long field as int64 (16, 24, or 32).
+        """
+        for m in re.finditer(rb'SampleSize', self.data):
+            pos = m.start()
+            region = self.data[pos : pos + 200]
+            long_match = re.search(
+                rb'Long\x00\x00\x01(.{8})', region, re.DOTALL
+            )
+            if long_match:
+                val = struct.unpack(">q", long_match.group(1))[0]
+                if val in (16, 24, 32, 64):
+                    self.project.bit_depth = val
+                    return
+
+    # ── Transport (Locators, Cycle, Cursor) ─────────────────────────────
+
+    def _extract_transport(self):
+        """Extract transport state: cursor, cycle, punch positions.
+
+        The Transport container holds Time, Cycle Left/Right, Punch Left/Right
+        as compound fields with a Time double child (position in beats).
+        """
+        pos = self.data.find(b'Transport\x00\x00\x02')
+        if pos == -1:
+            return
+
+        region = self.data[pos : pos + 2000]
+
+        # CycleOn flag
+        cycle_match = re.search(
+            rb'CycleOn\x00\x00\x01(.{8})', region, re.DOTALL
+        )
+        if cycle_match:
+            self.project.cycle_on = struct.unpack(">q", cycle_match.group(1))[0] == 1
+
+        # Extract position doubles from compound fields
+        for field_name, attr in [
+            (b'Cycle Left', 'cycle_left'),
+            (b'Cycle Right', 'cycle_right'),
+            (b'Punch Left', 'punch_left'),
+            (b'Punch Right', 'punch_right'),
+        ]:
+            fm = re.search(
+                re.escape(field_name) + rb'\x00\x00\x02.+?Time\x00\x00\x04(.{8})',
+                region,
+                re.DOTALL,
+            )
+            if fm:
+                val = struct.unpack(">d", fm.group(1))[0]
+                if 0 <= val < 1e8:
+                    setattr(self.project, attr, round(val, 4))
+
+        # Cursor position (first Time compound)
+        time_match = re.search(
+            rb'Time\x00\x00\x02.+?Time\x00\x00\x04(.{8})',
+            region[:200],
+            re.DOTALL,
+        )
+        if time_match:
+            val = struct.unpack(">d", time_match.group(1))[0]
+            if 0 <= val < 1e8:
+                self.project.cursor_position = round(val, 4)
+
+    # ── Monitor ─────────────────────────────────────────────────────────
+
+    def _extract_monitor(self):
+        """Extract monitor enable status for each track.
+
+        Monitor is a compound field with Value as int (0=off, 1=on, 2=tape).
+        """
+        sorted_tracks = sorted(self._track_positions, key=lambda x: x[1])
+        if not sorted_tracks:
+            return
+
+        for i, (track, strip_pos) in enumerate(sorted_tracks):
+            next_pos = (
+                sorted_tracks[i + 1][1]
+                if i + 1 < len(sorted_tracks)
+                else strip_pos + 200_000
+            )
+            region_end = min(next_pos, strip_pos + 200_000, len(self.data))
+            region = self.data[strip_pos : region_end]
+
+            mon_match = re.search(
+                rb'Monitor\x00\x00\x02\x00\x06.{4}\x00\x00\x00\x06Value\x00\x00\x01(.{8})',
+                region,
+                re.DOTALL,
+            )
+            if mon_match:
+                val = struct.unpack(">q", mon_match.group(1))[0]
+                track.monitor = val >= 1
+
+    # ── Plugin Presets ──────────────────────────────────────────────────
+
+    def _extract_plugin_presets(self):
+        """Extract preset names from XML Preset entries and assign to plugins.
+
+        Pattern: <Preset Name="preset_name"> in PresetChunkXMLTree blocks.
+        """
+        # Build list of (position, preset_name)
+        presets: list[tuple[int, str]] = []
+        for m in re.finditer(rb'<Preset\s+Name="([^"]*)"', self.data):
+            name = m.group(1).decode("utf-8", errors="ignore")
+            if name:
+                presets.append((m.start(), name))
+
+        if not presets:
+            return
+
+        # Assign to nearest plugin by position
+        all_plugins: list[tuple[PluginInstance, int]] = []
+        sorted_tracks = sorted(self._track_positions, key=lambda x: x[1])
+        for track, track_pos in sorted_tracks:
+            for plugin in track.plugins:
+                all_plugins.append((plugin, track_pos))
+
+        for preset_pos, preset_name in presets:
+            best_plugin = None
+            best_dist = float("inf")
+            for plugin, plugin_pos in all_plugins:
+                dist = abs(preset_pos - plugin_pos)
+                if dist < best_dist and dist < 50_000:
+                    best_dist = dist
+                    best_plugin = plugin
+            if best_plugin and not best_plugin.preset_name:
+                best_plugin.preset_name = preset_name
+
+    # ── Folder Hierarchy ────────────────────────────────────────────────
+
+    def _extract_folder_hierarchy(self):
+        """Extract folder track structure and assign folder names to child tracks.
+
+        MFolderTrack entries contain a child count after the BOM marker.
+        Child tracks follow immediately in file order.
+        """
+        folders: list[tuple[int, str, int]] = []  # (position, name, child_count)
+
+        for m in re.finditer(rb'MFolderTrack\x00', self.data):
+            pos = m.start()
+            region = self.data[pos : pos + 500]
+
+            # Extract folder name
+            name_match = re.search(
+                rb'\x00\x00\x00[\x02-\x40]([\x20-\x7e]+)\x00\xef\xbb\xbf',
+                region,
+            )
+            if not name_match:
+                continue
+
+            folder_name = name_match.group(1).decode("utf-8", errors="ignore")
+            bom_end = name_match.end()
+
+            # Child count: after BOM + some header bytes, read as int16
+            # Scan for child count in the area after BOM
+            after_bom = region[bom_end : bom_end + 30]
+            child_count = 0
+            # Look for a small int16 (1-50) after some header bytes
+            for off in range(4, min(25, len(after_bom) - 1)):
+                val = struct.unpack_from(">H", after_bom, off)[0]
+                if 1 <= val <= 50:
+                    child_count = val
+                    break
+
+            if child_count > 0:
+                folders.append((pos, folder_name, child_count))
+
+        if not folders:
+            return
+
+        # Sort folders and track events by position
+        track_events: list[tuple[int, str]] = []
+        for marker_bytes, track_type_str in TRACK_MARKERS.items():
+            for tm in re.finditer(re.escape(marker_bytes), self.data):
+                track_events.append((tm.start(), track_type_str))
+        track_events.sort()
+
+        # For each folder, find child track events that follow it
+        for folder_pos, folder_name, child_count in folders:
+            # Find track events after this folder
+            children_found = 0
+            for event_pos, _ in track_events:
+                if event_pos <= folder_pos:
+                    continue
+                if children_found >= child_count:
+                    break
+
+                # Assign folder name to the matching project track
+                for track in self.project.tracks:
+                    # Match by name proximity — find track name near event_pos
+                    event_region = self.data[event_pos : event_pos + 300]
+                    name_m = re.search(
+                        rb'\x00\x00\x00[\x02-\x40]([\x20-\x7e]+)\x00\xef\xbb\xbf',
+                        event_region,
+                    )
+                    if name_m:
+                        event_name = name_m.group(1).decode("utf-8", errors="ignore")
+                        if track.name == event_name and not track.folder:
+                            track.folder = folder_name
+                            break
+
+                children_found += 1
+
+    # ── Automation ──────────────────────────────────────────────────────
+
+    def _extract_automation(self):
+        """Extract automation lanes from MAutomationTrackEvent entries.
+
+        Each automation track has a name and contains point data with
+        position (PPQ) and value (normalized 0.0–1.0) pairs.
+        """
+        for m in re.finditer(rb'MAutomationTrackEvent\x00', self.data):
+            pos = m.start()
+            region = self.data[pos : pos + 5000]
+
+            # Extract automation track name
+            name_match = re.search(
+                rb'\x00\x00\x00[\x02-\x40]([\x20-\x7e]+)\x00\xef\xbb\xbf',
+                region,
+            )
+            name = name_match.group(1).decode("utf-8", errors="ignore") if name_match else ""
+
+            lane = AutomationLane(parameter_name=name)
+
+            # Extract automation points: look for VffO (value) and TDRH (time) pairs
+            # These appear as reversed 4-char markers with double values
+            points: list[AutomationPoint] = []
+            for pm in re.finditer(rb'VffO\x00\x04(.{8})', region, re.DOTALL):
+                value = struct.unpack(">d", pm.group(1))[0]
+                if not (0.0 <= value <= 1.0):
+                    continue
+
+                # Find the preceding TDRH (position)
+                before = region[max(0, pm.start() - 30) : pm.start()]
+                tm = re.search(rb'TDRH\x00\x04(.{8})', before, re.DOTALL)
+                if tm:
+                    time_val = struct.unpack(">d", tm.group(1))[0]
+                    points.append(AutomationPoint(position=time_val, value=value))
+
+            lane.points = points
+            if points:
+                self.project.automation.append(lane)
+
+    # ── MIDI ────────────────────────────────────────────────────────────
+
+    def _extract_midi(self):
+        """Extract MIDI note data from MMidiPartEvent entries.
+
+        Each MIDI part contains note events with position, length, pitch,
+        and velocity stored in a fixed-size per-note block.
+        """
+        for m in re.finditer(rb'MMidiPartEvent\x00', self.data):
+            pos = m.start()
+            region = self.data[pos : pos + 50000]  # MIDI parts can be large
+
+            # Part name
+            name_match = re.search(
+                rb'\x00\x00\x00[\x02-\x40]([\x20-\x7e]+)\x00\xef\xbb\xbf',
+                region[:300],
+            )
+            part_name = name_match.group(1).decode("utf-8", errors="ignore") if name_match else ""
+
+            midi_part = MidiPart(name=part_name)
+
+            # Find note data blocks: each note has adcn marker followed by
+            # fixed-size data containing length, pitch, position, velocity
+            for nm in re.finditer(rb'adcn\x00\x01(.{8})', region, re.DOTALL):
+                note_start = nm.end()
+                # After adcn value: 4-byte flags + 4-byte reserved + 8-byte length
+                # + 16 zero bytes + 1-byte pitch + 1-byte status + 8-byte position
+                # + 1-byte pad + 1-byte off_vel + 1-byte on_vel
+                block = region[note_start : note_start + 50]
+                if len(block) < 45:
+                    continue
+
+                try:
+                    # flags(4) + reserved(4) = 8 bytes, then length double
+                    note_length = struct.unpack_from(">d", block, 8)[0]
+                    if note_length <= 0 or note_length > 100000:
+                        continue
+
+                    # After length(8) + 16 zeros = offset 32
+                    pitch = block[32]
+                    status = block[33]
+
+                    # Only process note-on events (0x90)
+                    if status != 0x90:
+                        continue
+
+                    # Position double at offset 34
+                    note_pos = struct.unpack_from(">d", block, 34)[0]
+
+                    # Velocities at offset 43 and 44
+                    off_vel = block[43]
+                    on_vel = block[44]
+
+                    if 0 <= pitch <= 127 and 0 <= on_vel <= 127:
+                        midi_part.notes.append(MidiNote(
+                            position=round(note_pos, 2),
+                            length=round(note_length, 2),
+                            pitch=pitch,
+                            velocity=on_vel,
+                            off_velocity=off_vel,
+                        ))
+                except (struct.error, IndexError):
+                    continue
+
+            if midi_part.notes:
+                # Assign to nearest track
+                self._assign_midi_to_track(midi_part, pos)
+
+    def _assign_midi_to_track(self, midi_part: MidiPart, part_pos: int):
+        """Assign a MIDI part to the nearest preceding track."""
+        sorted_tracks = sorted(self._track_positions, key=lambda x: x[1])
+        assigned = None
+        for track, track_pos in sorted_tracks:
+            if track_pos <= part_pos:
+                assigned = track
+            else:
+                break
+        if assigned:
+            assigned.midi_parts.append(midi_part)
 
     # ── Post-processing ──────────────────────────────────────────────────
 

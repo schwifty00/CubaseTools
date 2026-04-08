@@ -9,8 +9,12 @@ cpr_path = sys.argv[1] if len(sys.argv) > 1 else r"C:\DeepArt\Projekt 25\Proviso
 p = parse_cpr(Path(cpr_path))
 
 print(f"=== PROJEKT: {p.project_name} ===")
-print(f"Sample Rate: {p.sample_rate} Hz | Tempo: {p.tempo} BPM | Time Sig: {p.time_signature}")
+print(f"Version: {p.cubase_version}")
+print(f"Sample Rate: {p.sample_rate} Hz | Bit Depth: {p.bit_depth} bit")
+print(f"Tempo: {p.tempo} BPM | Time Sig: {p.time_signature}")
+print(f"Cursor: {p.cursor_position:.2f} beats | Cycle: {'ON' if p.cycle_on else 'OFF'} [{p.cycle_left:.2f} - {p.cycle_right:.2f}]")
 print(f"Tracks: {p.track_count} | Plugins: {p.plugin_count} | Audio: {len(p.referenced_audio)}")
+print(f"Automation: {len(p.automation)} lanes | Markers: {len(p.markers)}")
 print()
 
 for t in p.tracks:
@@ -22,7 +26,9 @@ for t in p.tracks:
     if t.solo:
         flags += " [SOLO]"
     color_str = f" {t.color}" if t.color else ""
-    print(f"--- [{t.track_type.value.upper():12s}] {t.name}  |  {vol_str}  {pan_str}{flags}{color_str} ---")
+    folder_str = f" [{t.folder}]" if t.folder else ""
+    monitor_str = " [MON]" if t.monitor else ""
+    print(f"--- [{t.track_type.value.upper():12s}] {t.name}  |  {vol_str}  {pan_str}{flags}{monitor_str}{color_str}{folder_str} ---")
 
     if t.output_bus:
         print(f"    -> Output: {t.output_bus}")
@@ -37,7 +43,8 @@ for t in p.tracks:
         print("    (keine Plugins)")
     for i, pl in enumerate(t.plugins):
         bypassed = " [BYPASS]" if pl.bypassed else ""
-        print(f"    Slot {i+1}: {pl.name}{bypassed}")
+        preset = f' [{pl.preset_name}]' if pl.preset_name else ""
+        print(f"    Slot {i+1}: {pl.name}{bypassed}{preset}")
 
         if pl.eq_bands:
             for band in pl.eq_bands:
@@ -75,4 +82,18 @@ for t in p.tracks:
     if t.audio_files:
         print(f"    Audio: {', '.join(t.audio_files)}")
 
+    if t.midi_parts:
+        total_notes = sum(len(mp.notes) for mp in t.midi_parts)
+        print(f"    MIDI: {len(t.midi_parts)} parts, {total_notes} notes")
+
+    if t.automation:
+        for lane in t.automation:
+            print(f"    Automation: {lane.parameter_name} ({len(lane.points)} points)")
+
+    print()
+
+if p.automation:
+    print("=== PROJEKT-AUTOMATION ===")
+    for lane in p.automation:
+        print(f"  {lane.parameter_name}: {len(lane.points)} points")
     print()

@@ -65,10 +65,40 @@ class PluginInstance:
     uid: str = ""
     slot_index: int = 0
     bypassed: bool = False
+    preset_name: str = ""
     eq_bands: list[EQBand] = field(default_factory=list)
     compressor: CompressorSettings | None = None
     parameters: dict[str, float] = field(default_factory=dict)
     raw_chunk: bytes = field(default_factory=bytes, repr=False)
+
+
+@dataclass
+class AutomationPoint:
+    position: float = 0.0  # PPQ ticks
+    value: float = 0.0     # normalized 0.0–1.0
+
+
+@dataclass
+class AutomationLane:
+    parameter_name: str = ""
+    track_name: str = ""
+    points: list[AutomationPoint] = field(default_factory=list)
+
+
+@dataclass
+class MidiNote:
+    position: float = 0.0    # PPQ ticks
+    length: float = 0.0      # PPQ ticks
+    pitch: int = 60           # MIDI note number 0-127
+    velocity: int = 100       # note-on velocity 0-127
+    off_velocity: int = 0     # note-off velocity
+
+
+@dataclass
+class MidiPart:
+    name: str = ""
+    position: float = 0.0    # PPQ ticks offset
+    notes: list[MidiNote] = field(default_factory=list)
 
 
 @dataclass
@@ -80,11 +110,15 @@ class Track:
     pan: float = 0.0
     muted: bool = False
     solo: bool = False
+    monitor: bool = False
     color: str = ""
+    folder: str = ""
     plugins: list[PluginInstance] = field(default_factory=list)
     audio_files: list[str] = field(default_factory=list)
     output_bus: str = ""
     sends: list[SendSlot] = field(default_factory=list)
+    automation: list[AutomationLane] = field(default_factory=list)
+    midi_parts: list[MidiPart] = field(default_factory=list)
     has_content: bool = False
 
 
@@ -104,8 +138,15 @@ class CubaseProject:
     bit_depth: int = 24
     tempo: float = 120.0
     time_signature: str = "4/4"
+    cursor_position: float = 0.0      # beats
+    cycle_on: bool = False
+    cycle_left: float = 0.0           # beats
+    cycle_right: float = 0.0          # beats
+    punch_left: float = 0.0           # beats
+    punch_right: float = 0.0          # beats
     tracks: list[Track] = field(default_factory=list)
     markers: list[Marker] = field(default_factory=list)
+    automation: list[AutomationLane] = field(default_factory=list)
     referenced_audio: set[str] = field(default_factory=set)
     file_size: int = 0
 
