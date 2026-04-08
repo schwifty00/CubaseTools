@@ -17,15 +17,16 @@ def extract_referenced_audio(cpr_path: Path) -> set[str]:
 
     referenced: set[str] = set()
 
-    # UTF-8 encoded .wav references
-    for match in re.finditer(rb'([\w\-\. ]+\.wav)', data, re.IGNORECASE):
+    # UTF-8 encoded .wav references — include () for Cubase duplicate suffixes
+    # First char must be alphanumeric to avoid matching stray parentheses
+    for match in re.finditer(rb'(\w[\w\-\. ()]*\.wav)', data, re.IGNORECASE):
         name = match.group(1).decode("utf-8", errors="ignore").strip()
         if name and len(name) > 4:
             referenced.add(name.lower())
 
     # UTF-16-LE encoded .wav references
     for match in re.finditer(
-        rb'((?:[\w\-\. ]\x00)+w\x00a\x00v\x00)', data, re.IGNORECASE
+        rb'(\w\x00(?:[\w\-\. ()]\x00)*w\x00a\x00v\x00)', data, re.IGNORECASE
     ):
         try:
             name = match.group(1).decode("utf-16-le", errors="ignore").strip()
@@ -36,7 +37,7 @@ def extract_referenced_audio(cpr_path: Path) -> set[str]:
 
     # Other audio formats (UTF-8)
     for ext in [b"mp3", b"flac", b"aif", b"aiff", b"ogg", b"m4a"]:
-        pattern = rb'([\w\-\. ]+\.' + ext + rb')'
+        pattern = rb'(\w[\w\-\. ()]*\.' + ext + rb')'
         for match in re.finditer(pattern, data, re.IGNORECASE):
             name = match.group(1).decode("utf-8", errors="ignore").strip()
             if name and len(name) > 4:
@@ -134,9 +135,21 @@ def move_files_to_unused(entries: list[tuple[Path, Path]]) -> int:
 
 
 def delete_files(entries: list[tuple[Path, Path]]) -> int:
-    """Permanently delete files. Returns count of deleted files."""
+    """Delete files by sending them to the system recycle bin.
+
+    Uses send2trash so files can be recovered if needed.
+    Falls back to permanent deletion only if send2trash is unavailable.
+    Returns count of deleted files.
+    """
     deleted = 0
-    for file_path, _ in entries:
-        file_path.unlink()
-        deleted += 1
+    try:
+        from send2trash import send2trash as _trash
+
+        for file_path, _ in entries:
+            _trash(str(file_path))
+            deleted += 1
+    except ImportError:
+        for file_path, _ in entries:
+            file_path.unlink()
+            deleted += 1
     return deleted

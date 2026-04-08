@@ -436,16 +436,24 @@ class CprParser:
     # ── Audio references ─────────────────────────────────────────────────
 
     def _extract_audio_references(self):
-        """Extract all referenced audio filenames."""
+        """Extract all referenced audio filenames.
+
+        Filenames can contain parentheses (e.g., 'Audio 02 (D)_18.wav'),
+        hyphens, spaces, dots, and other common characters. The regex must
+        be broad enough to capture the full filename.
+        """
         referenced: set[str] = set()
 
-        for match in re.finditer(rb'([\w\-\. ]+\.wav)', self.data, re.IGNORECASE):
+        # UTF-8 .wav references — include () for Cubase duplicate suffixes
+        # First char must be alphanumeric to avoid matching stray parentheses
+        for match in re.finditer(rb'(\w[\w\-\. ()]*\.wav)', self.data, re.IGNORECASE):
             name = match.group(1).decode("utf-8", errors="ignore").strip()
             if name and len(name) > 4:
                 referenced.add(name.lower())
 
+        # UTF-16-LE .wav references
         for match in re.finditer(
-            rb'((?:[\w\-\. ]\x00)+w\x00a\x00v\x00)', self.data, re.IGNORECASE
+            rb'(\w\x00(?:[\w\-\. ()]\x00)*w\x00a\x00v\x00)', self.data, re.IGNORECASE
         ):
             try:
                 name = match.group(1).decode("utf-16-le", errors="ignore").strip()
@@ -454,8 +462,9 @@ class CprParser:
             except (UnicodeDecodeError, ValueError):
                 continue
 
+        # Other audio formats
         for ext in [b"mp3", b"flac", b"aif", b"aiff", b"ogg", b"m4a"]:
-            pattern = rb'([\w\-\. ]+\.' + ext + rb')'
+            pattern = rb'(\w[\w\-\. ()]*\.' + ext + rb')'
             for match in re.finditer(pattern, self.data, re.IGNORECASE):
                 name = match.group(1).decode("utf-8", errors="ignore").strip()
                 if name and len(name) > 4:
@@ -887,7 +896,7 @@ class CprParser:
             audio_files: list[str] = []
 
             for wav_match in re.finditer(
-                rb'([\w\-\. ]+\.wav)\x00', region, re.IGNORECASE
+                rb'(\w[\w\-\. ()]*\.wav)\x00', region, re.IGNORECASE
             ):
                 name = wav_match.group(1).decode("utf-8", errors="ignore").strip()
                 if len(name) > 4 and name not in audio_files:
