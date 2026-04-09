@@ -107,7 +107,7 @@ class Track:
     track_type: TrackType = TrackType.UNKNOWN
     index: int = 0
     volume: float = 0.0
-    pan: float = 0.0
+    pan: float | None = None
     muted: bool = False
     solo: bool = False
     monitor: bool = False

@@ -252,7 +252,8 @@ strip position to the next strip, max 200 KB).
 
 ### Volume (Fader)
 
-**Pattern:** `Volume\x00` compound field with fixed header, then `Value\x00` double.
+**Pattern:** `Volume\x00` compound field with 2 children: `Value` (raw fader
+position) and `AnchorValue` (the actual dB reading shown in Cubase's mixer).
 
 **Full binary pattern:**
 ```
@@ -263,51 +264,88 @@ Volume\x00
   \x00\x00\x00\x06  (name_len = 6)
   Value\x00
     \x00\x04        (type = double)
-    <8 bytes BE double>   ← fader value
+    <8 bytes BE double>   ← raw fader position (non-linear curve)
   \x00\x00\x00\x0c  (name_len = 12)
   AnchorValue\x00
     \x00\x04        (type = double)
-    <8 bytes BE double>   ← anchor (automation reset) value
+    <8 bytes BE double>   ← actual dB value shown in Cubase
 ```
 
-**Regex:** `Volume\x00\x00\x02\x00\x06\x00\x00\x00\x02\x00\x00\x00\x06Value\x00\x00\x04(.{8})`
+**Regex (with AnchorValue):**
+```
+Volume\x00\x00\x02\x00\x06\x00\x00\x00\x02
+\x00\x00\x00\x06Value\x00\x00\x04(.{8})
+\x00\x00\x00\x0cAnchorValue\x00\x00\x04(.{8})
+```
 
-**Value range:** 0.0 – ~32767.0
-- **0 dB (unity)** = 25856.0
-- **-∞ (silence)** = 0.0
-- **-1.0** = unused/bypass slot (must be ignored)
+**AnchorValue** is the **correct volume in dB** — use it directly.
 
-**dB conversion:** `dB = 20 * log10(value / 25856.0)`
+**Value (raw fader):** 0.0 – ~32767.0 with unity at 25856.0. Cubase uses a
+non-linear fader curve, so `20 * log10(value / 25856)` gives incorrect results.
+Only use Value as a fallback if AnchorValue is missing.
 
 **⚠ Note:** There are many `Volume` fields per track (main fader, send levels,
-plugin parameters). The first match within the track region is the channel
+insert-slot panners). The first match within the track region is the channel
 fader. Send volumes are inside the `SendFolder` region and are handled
 separately.
 
 ### Pan
 
-**Pattern:** `Pan\x00` compound field with fixed header, then `Value\x00` double.
+**Pan is NOT stored in a `Pan\x00` compound field** for individual tracks
+(those only exist for output channels with value 16383.5 = center). Per-track
+pan is stored inside the **Standard Panner** plugin's `audioComponent` blob.
 
-**Full binary pattern:**
+**Channel strip structure (simplified):**
 ```
-Pan\x00
-  \x00\x02          (type = compound)
-  \x00\x06          (flags)
-  \x00\x00\x00\x01  (1 child — no AnchorValue)
-  \x00\x00\x00\x06  (name_len = 6)
-  Value\x00
-    \x00\x04        (type = double)
-    <8 bytes BE double>   ← pan value
+[Track strip]
+  Volume → Value + AnchorValue    ← track fader
+  Output → Value
+  Panner (21 children)            ← track's main panner section
+    Standard Panner               ← panner plugin
+      audioComponent              ← contains pan for INSERT SLOTS (always center)
+    Volume → Output → Panner      ← nested, repeats for each insert slot
+      ...
+    SummingMode                   ← marks the MAIN channel panner
+    Panner (21 children)          ← the ACTUAL channel panner
+      Standard Panner
+        audioComponent            ← PAN VALUE IS HERE
 ```
 
-**Regex:** `Pan\x00\x00\x02\x00\x06\x00\x00\x00\x01\x00\x00\x00\x06Value\x00\x00\x04(.{8})`
+**The main channel panner** is distinguished from insert-slot panners by appearing
+after a `SummingMode` field, followed by a `Panner` compound with 21 children.
 
-**Value range:** 0.0 – 32767.0
-- **Center** = 16383.5
-- **Hard left** = 0.0
-- **Hard right** = 32767.0
+**audioComponent layout:**
+```
+audioComponent\x00
+  \x00\x02\x00\x07   (type = compound, subtype = 0x07)
+  <4 bytes BE uint32>  ← header (typically 20)
+  <4 bytes LE float>   ← PAN VALUE (0.0=left, 0.5=center, 1.0=right)
+```
 
-**Normalized:** `pan_normalized = (value - 16383.5) / 16383.5` → range -1.0 (L) to +1.0 (R)
+**Regex:**
+```
+SummingMode\x00.{0,30}?
+Panner\x00\x00\x02\x00\x06\x00\x00\x00\x15
+.{200,600}?Standard Panner
+.+?audioComponent\x00\x00\x02\x00\x07.{4}(.{4})
+```
+
+**Pan value:** 4-byte **little-endian float**
+- **Hard left** = 0.0 → normalized -1.0
+- **Center** = 0.5 → normalized 0.0
+- **Hard right** = 1.0 → normalized +1.0
+
+**Normalized:** `pan_normalized = (le_float - 0.5) * 2.0`
+
+**⚠ Important:** Each channel strip contains **many** Standard Panner
+`audioComponent` blobs (one per insert slot + sends). Only the one following
+`SummingMode → Panner(21 children)` contains the actual track pan position.
+The insert-slot panners always read 0.5 (center).
+
+#### Legacy Pan compound (output channels only)
+
+The `Pan\x00` compound field with a double `Value` only exists for output
+channels (Stereo Out). It uses the range 0–32767 with center at 16383.5.
 
 ### Mute
 
@@ -493,8 +531,8 @@ fixed tempo store the BPM in `MTempoEvent` > `BPM` elsewhere in the file.
 | Time signature | ✅ Parsed | `TimeSignatureEvent` > `Numerator`/`Denominator` |
 | Track names | ✅ Parsed | Channel strip pattern |
 | Track types | ✅ Parsed | `IDString` entries |
-| Track volume | ✅ Parsed | `Volume` compound > `Value` double |
-| Track pan | ✅ Parsed | `Pan` compound > `Value` double |
+| Track volume | ✅ Parsed | `Volume` compound > `AnchorValue` double (dB) |
+| Track pan | ✅ Parsed | Standard Panner `audioComponent` LE float (after `SummingMode`) |
 | Track mute | ✅ Parsed | `Mute` int field |
 | Track solo | ✅ Parsed | `Solo` int field |
 | Track color | ✅ Parsed | Palette index in event header + `UColorSet` |
@@ -515,6 +553,10 @@ fixed tempo store the BPM in `MTempoEvent` > `BPM` elsewhere in the file.
 | `RehearsalTempo` field | Tap tempo rehearsal setting, not project tempo |
 | Track color index 0 | Treat as "no color set" (most tracks default to 0) |
 | Volume = -1.0 | Unused/bypass slot, not silence |
+| Volume `Value` vs `AnchorValue` | `AnchorValue` is the real dB; `Value` uses a non-linear fader curve |
+| Pan not in `Pan\x00` compound | Per-track pan is in Standard Panner `audioComponent`, not the named field |
+| Multiple Standard Panners per track | Insert-slot panners are always center; main panner follows `SummingMode` |
+| Audio tracks without audio refs | Don't filter out — audio ref detection is incomplete |
 | Duplicate channel strips | Same name within 40 KB = duplicate |
 | I/O section after 1 MB gap | Hardware I/O channels, filter out |
 

@@ -114,11 +114,10 @@ def test_extract_time_signature_6_8():
 
 
 def test_extract_volume():
-    """Parser should extract fader volume from channel strip regions."""
-    import math
-    # Build: channel strip + Volume compound field
-    # Volume at -6 dB: 25856 * 10^(-6/20) = 25856 * 0.5012 = 12958.9
+    """Parser should extract fader volume from AnchorValue (dB)."""
+    # Build: channel strip + Volume compound with Value + AnchorValue
     raw_vol = 25856.0 * (10 ** (-6.0 / 20.0))
+    anchor_db = -6.0
     strip = (
         b"Name\x00" + b"\x00" * 5
         + b"String\x00" + b"\x00" * 3
@@ -131,11 +130,13 @@ def test_extract_volume():
         b"\x00\x02\x00\x06\x00\x00\x00\x02\x00\x00\x00\x06"
         b"Value\x00\x00\x04"
         + struct.pack(">d", raw_vol)
+        + b"\x00\x00\x00\x0c"
+        b"AnchorValue\x00\x00\x04"
+        + struct.pack(">d", anchor_db)
     )
     data = b"\x00" * 20 + strip + b"\x00" * 100 + volume_field + b"\x00" * 200
     path = _make_cpr(data)
     project = parse_cpr(path)
-    # Find the track (post-processing may filter, so check if found)
     test_tracks = [t for t in project.tracks if "TestTrack" in t.name]
     if test_tracks:
         assert abs(test_tracks[0].volume - (-6.0)) < 0.5
@@ -143,8 +144,8 @@ def test_extract_volume():
 
 
 def test_extract_pan():
-    """Parser should extract pan from channel strip regions."""
-    # Pan hard-right = 32767.0 -> normalized = +1.0
+    """Parser should extract pan from Standard Panner audioComponent blob."""
+    # Pan hard-right = 1.0 LE float -> normalized = +1.0
     strip = (
         b"Name\x00" + b"\x00" * 5
         + b"String\x00" + b"\x00" * 3
@@ -153,16 +154,22 @@ def test_extract_pan():
         + b"InputFilter"
     )
     pan_field = (
-        b"Pan\x00"
-        b"\x00\x02\x00\x06\x00\x00\x00\x01\x00\x00\x00\x06"
-        b"Value\x00\x00\x04"
-        + struct.pack(">d", 32767.0)
+        b"SummingMode\x00" + b"\x00" * 10
+        + b"Panner\x00\x00\x02\x00\x06\x00\x00\x00\x15"
+        + b"\x00" * 250
+        + b"Standard Panner"
+        + b"\x00" * 20
+        + b"audioComponent\x00\x00\x02\x00\x07"
+        + struct.pack(">I", 20)   # header
+        + struct.pack("<f", 1.0)  # pan = hard right (LE float)
+        + b"\x00" * 63           # rest of data
     )
     data = b"\x00" * 20 + strip + b"\x00" * 100 + pan_field + b"\x00" * 200
     path = _make_cpr(data)
     project = parse_cpr(path)
     test_tracks = [t for t in project.tracks if "PanTest" in t.name]
     if test_tracks:
+        assert test_tracks[0].pan is not None
         assert test_tracks[0].pan > 0.9  # should be ~1.0
     path.unlink()
 

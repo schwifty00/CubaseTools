@@ -242,12 +242,14 @@ class AnalyzerTab:
         mixer_rows = []
         for t in project.tracks:
             vol = f"{t.volume:+.1f}" if t.volume != 0 else "0.0"
-            if t.pan < -0.01:
+            if t.pan is None:
+                pan = "-"
+            elif t.pan < -0.01:
                 pan = f"L{abs(t.pan)*100:.0f}"
             elif t.pan > 0.01:
                 pan = f"R{t.pan*100:.0f}"
             else:
-                pan = "-"
+                pan = "C"
             mute = "M" if t.muted else ""
             solo = "S" if t.solo else ""
             mon = "Mon" if t.monitor else ""

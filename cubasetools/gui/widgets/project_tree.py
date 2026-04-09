@@ -59,7 +59,9 @@ class ProjectTree(ctk.CTkScrollableFrame):
 
             # Volume / Pan info on the right
             vol_str = f"{track.volume:+.1f} dB" if track.volume != 0 else "0.0 dB"
-            if track.pan < -0.01:
+            if track.pan is None:
+                pan_str = "-"
+            elif track.pan < -0.01:
                 pan_str = f"L{abs(track.pan)*100:.0f}"
             elif track.pan > 0.01:
                 pan_str = f"R{track.pan*100:.0f}"

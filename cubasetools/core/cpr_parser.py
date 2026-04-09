@@ -969,7 +969,6 @@ class CprParser:
     # ── Volume, Pan, Mute, Solo ─────────────────────────────────────────
 
     _VOLUME_UNITY = 25856.0  # 0 dB fader position
-    _PAN_CENTER = 16383.5    # center pan position
 
     def _extract_volume_pan(self):
         """Extract fader volume and pan for each track.
@@ -990,36 +989,46 @@ class CprParser:
             region_end = min(next_pos, strip_pos + 200_000, len(self.data))
             region = self.data[strip_pos : region_end]
 
-            # Volume: compound with fixed header then Value double
-            # Pattern: Volume\x00 \x00\x02 \x00\x06 \x00\x00\x00\x02
-            #          \x00\x00\x00\x06 Value\x00 \x00\x04 <8 bytes>
+            # Volume: compound with 2 children (Value + AnchorValue).
+            # AnchorValue is the actual dB reading shown in Cubase's mixer.
+            # Value is a raw fader position (non-linear curve).
             vol_match = re.search(
-                rb'Volume\x00\x00\x02\x00\x06\x00\x00\x00\x02\x00\x00\x00\x06Value\x00\x00\x04(.{8})',
+                rb'Volume\x00\x00\x02\x00\x06\x00\x00\x00\x02'
+                rb'\x00\x00\x00\x06Value\x00\x00\x04(.{8})'
+                rb'\x00\x00\x00\x0cAnchorValue\x00\x00\x04(.{8})',
                 region,
                 re.DOTALL,
             )
             if vol_match:
-                raw = struct.unpack(">d", vol_match.group(1))[0]
-                if raw > 0:
-                    track.volume = round(
-                        20.0 * math.log10(raw / self._VOLUME_UNITY), 1
-                    )
-                elif raw == 0:
-                    track.volume = -100.0  # -inf dB
+                anchor = struct.unpack(">d", vol_match.group(2))[0]
+                if -150 < anchor < 20:
+                    track.volume = round(anchor, 1)
+                else:
+                    # Fallback: use raw Value with log formula
+                    raw = struct.unpack(">d", vol_match.group(1))[0]
+                    if raw > 0:
+                        track.volume = round(
+                            20.0 * math.log10(raw / self._VOLUME_UNITY), 1
+                        )
+                    elif raw == 0:
+                        track.volume = -100.0
 
-            # Pan: compound with fixed header then Value double
-            # Pattern: Pan\x00 \x00\x02 \x00\x06 \x00\x00\x00\x01
-            #          \x00\x00\x00\x06 Value\x00 \x00\x04 <8 bytes>
+            # Pan: stored in the main channel Panner's Standard Panner
+            # audioComponent as a 4-byte LE float (0.0=left, 0.5=center,
+            # 1.0=right).  The main panner follows a SummingMode field and
+            # a Panner compound with 21 children, distinguishing it from
+            # insert-slot panners that appear earlier in the region.
             pan_match = re.search(
-                rb'Pan\x00\x00\x02\x00\x06\x00\x00\x00\x01\x00\x00\x00\x06Value\x00\x00\x04(.{8})',
+                rb'SummingMode\x00.{0,30}?'
+                rb'Panner\x00\x00\x02\x00\x06\x00\x00\x00\x15'
+                rb'.{200,600}?Standard Panner'
+                rb'.+?audioComponent\x00\x00\x02\x00\x07.{4}(.{4})',
                 region,
                 re.DOTALL,
             )
             if pan_match:
-                raw = struct.unpack(">d", pan_match.group(1))[0]
-                track.pan = round(
-                    (raw - self._PAN_CENTER) / self._PAN_CENTER, 3
-                )
+                raw = struct.unpack("<f", pan_match.group(1))[0]
+                track.pan = round((raw - 0.5) * 2.0, 3)
 
     def _extract_mute_solo(self):
         """Extract mute and solo status for each track.
@@ -1518,10 +1527,13 @@ class CprParser:
                 track.has_content = True
             elif track.track_type in (TrackType.INSTRUMENT, TrackType.MIDI):
                 track.has_content = True  # always have MIDI data
-            elif track.track_type in (TrackType.GROUP, TrackType.FX, TrackType.MASTER):
-                track.has_content = True  # mix busses, no "content" needed
+            elif track.track_type in (
+                TrackType.GROUP, TrackType.FX, TrackType.MASTER,
+                TrackType.AUDIO,
+            ):
+                track.has_content = True  # audio ref detection is incomplete
 
-            # Filter: skip empty audio tracks without plugins
+            # Filter: skip unknown-type tracks without any data
             if not track.has_content and not track.plugins:
                 continue
 
