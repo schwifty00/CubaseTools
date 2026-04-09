@@ -23,6 +23,7 @@ class CleanupTab:
     def __init__(self, parent: ctk.CTkFrame):
         self.parent = parent
         self.unused_entries: list[tuple[Path, Path]] = []
+        self._busy = False
         self._build_ui()
 
     def _build_ui(self):
@@ -133,6 +134,8 @@ class CleanupTab:
             self._analyze()
 
     def _analyze(self):
+        if self._busy:
+            return
         path = self.path_var.get().strip()
         if not path:
             messagebox.showwarning("Fehler", "Bitte einen Ordner auswaehlen!")
@@ -143,6 +146,7 @@ class CleanupTab:
             messagebox.showerror("Fehler", f"Ordner existiert nicht:\n{path}")
             return
 
+        self._busy = True
         self._clear_log()
         self._set_action_buttons(False)
         self.unused_entries = []
@@ -160,7 +164,10 @@ class CleanupTab:
             else:
                 self._analyze_batch(target)
         finally:
-            self.parent.after(0, lambda: self.analyze_btn.configure(state="normal"))
+            self.parent.after(0, lambda: (
+                setattr(self, '_busy', False),
+                self.analyze_btn.configure(state="normal"),
+            ))
 
     def _analyze_single(self, project_dir: Path):
         try:

@@ -25,6 +25,7 @@ class AnalyzerTab:
     def __init__(self, parent: ctk.CTkFrame):
         self.parent = parent
         self.project: CubaseProject | None = None
+        self._busy = False
         self._build_ui()
 
     def _build_ui(self):
@@ -189,6 +190,8 @@ class AnalyzerTab:
         self._parse()
 
     def _parse(self):
+        if self._busy:
+            return
         path = self.path_var.get().strip()
         if not path:
             return
@@ -198,6 +201,7 @@ class AnalyzerTab:
             self.status_var.set("Ungueltige .cpr Datei!")
             return
 
+        self._busy = True
         self.parse_btn.configure(state="disabled")
         self.status_var.set("Analysiere...")
 
@@ -209,6 +213,7 @@ class AnalyzerTab:
             self.project = project
 
             def update_ui():
+                self._busy = False
                 self._display_results(project)
                 self.parse_btn.configure(state="normal")
                 self.export_btn.configure(state="normal")
@@ -224,6 +229,7 @@ class AnalyzerTab:
             self.parent.after(
                 0,
                 lambda: (
+                    setattr(self, '_busy', False),
                     self.status_var.set(f"Fehler: {e}"),
                     self.parse_btn.configure(state="normal"),
                 ),

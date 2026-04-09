@@ -3,10 +3,10 @@
 Pure logic, no GUI. Returns data structures for the GUI layer to display.
 """
 
-import re
 import shutil
 from pathlib import Path
 
+from cubasetools.core.audio_patterns import find_audio_references
 from cubasetools.core.constants import AUDIO_EXTENSIONS, AUDIO_FOLDER_NAMES
 
 
@@ -14,36 +14,7 @@ def extract_referenced_audio(cpr_path: Path) -> set[str]:
     """Extract all audio file references from a .cpr binary file."""
     with open(cpr_path, "rb") as f:
         data = f.read()
-
-    referenced: set[str] = set()
-
-    # UTF-8 encoded .wav references — include () for Cubase duplicate suffixes
-    # First char must be alphanumeric to avoid matching stray parentheses
-    for match in re.finditer(rb'(\w[\w\-\. ()]*\.wav)', data, re.IGNORECASE):
-        name = match.group(1).decode("utf-8", errors="ignore").strip()
-        if name and len(name) > 4:
-            referenced.add(name.lower())
-
-    # UTF-16-LE encoded .wav references
-    for match in re.finditer(
-        rb'(\w\x00(?:[\w\-\. ()]\x00)*w\x00a\x00v\x00)', data, re.IGNORECASE
-    ):
-        try:
-            name = match.group(1).decode("utf-16-le", errors="ignore").strip()
-            if name and len(name) > 4:
-                referenced.add(name.lower())
-        except (UnicodeDecodeError, ValueError):
-            continue
-
-    # Other audio formats (UTF-8)
-    for ext in [b"mp3", b"flac", b"aif", b"aiff", b"ogg", b"m4a"]:
-        pattern = rb'(\w[\w\-\. ()]*\.' + ext + rb')'
-        for match in re.finditer(pattern, data, re.IGNORECASE):
-            name = match.group(1).decode("utf-8", errors="ignore").strip()
-            if name and len(name) > 4:
-                referenced.add(name.lower())
-
-    return referenced
+    return find_audio_references(data)
 
 
 def find_audio_folder(project_dir: Path) -> Path | None:

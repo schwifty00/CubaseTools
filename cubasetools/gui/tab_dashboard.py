@@ -23,6 +23,7 @@ class DashboardTab:
         self.parent = parent
         self.app = app
         self.projects: list[CubaseProject] = []
+        self._busy = False
         self._build_ui()
 
     def _build_ui(self):
@@ -163,6 +164,8 @@ class DashboardTab:
             self._scan()
 
     def _scan(self):
+        if self._busy:
+            return
         path = self.path_var.get().strip()
         if not path:
             return
@@ -172,6 +175,7 @@ class DashboardTab:
             self.status_var.set("Ordner existiert nicht!")
             return
 
+        self._busy = True
         self.scan_btn.configure(state="disabled")
         self.progress.set(0)
         self.status_var.set("Scanne...")
@@ -222,6 +226,7 @@ class DashboardTab:
                     f"{cross_stats.total_tracks} Tracks, "
                     f"{cross_stats.total_plugins} Plugins"
                 )
+                self._busy = False
                 self.scan_btn.configure(state="normal")
 
             self.parent.after(0, update_ui)
@@ -230,6 +235,7 @@ class DashboardTab:
             self.parent.after(
                 0,
                 lambda: (
+                    setattr(self, '_busy', False),
                     self.status_var.set(f"Fehler: {e}"),
                     self.scan_btn.configure(state="normal"),
                 ),

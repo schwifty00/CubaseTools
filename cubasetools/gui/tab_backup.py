@@ -21,6 +21,7 @@ class BackupTab:
     def __init__(self, parent: ctk.CTkFrame):
         self.parent = parent
         self.found_files: list[Path] = []
+        self._busy = False
         self._build_ui()
 
     def _build_ui(self):
@@ -112,6 +113,8 @@ class BackupTab:
             self._scan()
 
     def _scan(self):
+        if self._busy:
+            return
         path = self.path_var.get().strip()
         if not path:
             messagebox.showwarning("Fehler", "Bitte einen Ordner auswaehlen!")
@@ -122,6 +125,7 @@ class BackupTab:
             messagebox.showerror("Fehler", f"Ordner existiert nicht:\n{path}")
             return
 
+        self._busy = True
         self._clear_log()
         self.found_files = []
         self.delete_btn.configure(state="disabled")
@@ -168,7 +172,10 @@ class BackupTab:
             self.parent.after(0, lambda: self._log(f"FEHLER: {e}"))
             self.parent.after(0, lambda: self.status_var.set(f"Fehler: {e}"))
         finally:
-            self.parent.after(0, lambda: self.scan_btn.configure(state="normal"))
+            self.parent.after(0, lambda: (
+                setattr(self, '_busy', False),
+                self.scan_btn.configure(state="normal"),
+            ))
 
     def _delete(self):
         if not self.found_files:
