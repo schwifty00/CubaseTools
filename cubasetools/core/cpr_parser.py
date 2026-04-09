@@ -116,12 +116,18 @@ class CprParser(
                 new_score = _track_score(track)
                 if new_score > existing_score:
                     best_by_name[key] = track
-                elif new_score == existing_score and new_score > 0:
-                    # Same score, merge plugins (avoid duplicates)
-                    existing_names = {p.name for p in existing.plugins}
-                    for p in track.plugins:
+                else:
+                    # Merge data from the losing track into the winner
+                    loser = track if new_score <= existing_score else existing
+                    winner = best_by_name[key]
+                    existing_names = {p.name for p in winner.plugins}
+                    for p in loser.plugins:
                         if p.name not in existing_names:
-                            existing.plugins.append(p)
+                            winner.plugins.append(p)
+                    if loser.midi_parts and not winner.midi_parts:
+                        winner.midi_parts = loser.midi_parts
+                    if loser.audio_files and not winner.audio_files:
+                        winner.audio_files = loser.audio_files
 
         deduped = list(best_by_name.values())
 
@@ -174,6 +180,8 @@ def _track_score(track: Track) -> int:
         score += len(p.parameters)
         if p.compressor:
             score += 2
+    for mp in track.midi_parts:
+        score += len(mp.notes)
     return score
 
 

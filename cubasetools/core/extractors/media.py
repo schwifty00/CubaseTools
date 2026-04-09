@@ -146,29 +146,45 @@ class MediaExtractor:
 
                 midi_part = MidiPart(name=part_name)
 
-                for nm in re.finditer(rb'adcn\x00\x01(.{8})', region, re.DOTALL):
-                    note_start = nm.end()
-                    block = region[note_start : note_start + 50]
-                    if len(block) < 45:
+                # adcn record layout (verified against real .cpr files):
+                #   adcn\x00\x01  [6b header]
+                #   captured[0:4] = record size (uint32 BE, typically 0x20)
+                #   captured[4:8] = pitch in last byte (captured[7])
+                #   block[0:8]    = note length (float64 BE, in ticks)
+                #   block[8:24]   = reserved zeros
+                #   block[24]     = pitch (alternative location)
+                #   block[25]     = status byte (0x90 = note-on)
+                #   block[26:34]  = note position (float64 BE, in ticks)
+                #   block[34]     = padding
+                #   block[35]     = on-velocity (0-127)
+                #   block[36]     = off-velocity (0-127)
+                # Pitch is stored at captured[7] OR block[24] depending
+                # on Cubase version. Determine which has real data.
+                adcn_matches = list(
+                    re.finditer(rb'adcn\x00\x01(.{8})', region, re.DOTALL)
+                )
+                cap7_set = {m.group(1)[7] for m in adcn_matches}
+                use_block24 = cap7_set == {0}
+
+                for nm in adcn_matches:
+                    captured = nm.group(1)
+
+                    block = region[nm.end() : nm.end() + 37]
+                    if len(block) < 37:
                         continue
 
                     try:
-                        note_length = struct.unpack_from(">d", block, 8)[0]
+                        pitch = block[24] if use_block24 else captured[7]
+
+                        note_length = struct.unpack_from(">d", block, 0)[0]
                         if note_length <= 0 or note_length > 100000:
                             continue
 
-                        pitch = block[32]
-                        status = block[33]
+                        note_pos = struct.unpack_from(">d", block, 26)[0]
+                        on_vel = block[35]
+                        off_vel = block[36]
 
-                        if status != 0x90:
-                            continue
-
-                        note_pos = struct.unpack_from(">d", block, 34)[0]
-
-                        off_vel = block[43]
-                        on_vel = block[44]
-
-                        if 0 <= pitch <= 127 and 0 <= on_vel <= 127:
+                        if 0 < pitch <= 127 and 0 < on_vel <= 127:
                             midi_part.notes.append(MidiNote(
                                 position=round(note_pos, 2),
                                 length=round(note_length, 2),

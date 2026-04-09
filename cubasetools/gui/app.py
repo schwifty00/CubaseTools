@@ -80,7 +80,7 @@ class CubaseToolsApp:
 
         # Create tabs
         tab_dashboard = self.tabview.add("Dashboard")
-        tab_analyzer = self.tabview.add("Mix Analyzer")
+        tab_analyzer = self.tabview.add("CPR Analyzer")
         tab_cleanup = self.tabview.add("Audio Cleanup")
         tab_backup = self.tabview.add("Backup Cleanup")
 
@@ -92,7 +92,7 @@ class CubaseToolsApp:
 
     def open_analyzer_for_project(self, cpr_path):
         """Switch to analyzer tab and load a specific project."""
-        self.tabview.set("Mix Analyzer")
+        self.tabview.set("CPR Analyzer")
         self.analyzer_tab.load_project(cpr_path)
 
     def run(self):

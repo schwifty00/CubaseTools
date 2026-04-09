@@ -92,20 +92,30 @@ def test_no_automation_in_empty_project():
 
 
 def _make_midi_note(pitch: int, velocity: int, position: float, length: float) -> bytes:
-    """Build a single MIDI note block in the adcn format."""
+    """Build a single MIDI note block in the adcn format.
+
+    Layout (verified against real Cubase .cpr files):
+      adcn\\x00\\x01  [6b header]
+      [4b record size = 0x20]
+      [4b pitch in last byte]
+      [8b note length double]
+      [18b reserved zeros]
+      [8b note position double]
+      [1b padding]
+      [1b on-velocity]
+      [1b off-velocity]
+    """
     block = (
-        b"adcn\x00\x01" + struct.pack(">q", 1)  # adcn value
-        + struct.pack(">I", 0)   # flags
-        + struct.pack(">I", 0)   # reserved
-        + struct.pack(">d", length)  # note length
-        + b"\x00" * 16          # 16 zero bytes
-        + bytes([pitch])        # pitch
-        + bytes([0x90])         # status = note-on
-        + struct.pack(">d", position)  # position
-        + bytes([0])            # pad
-        + bytes([64])           # off velocity
-        + bytes([velocity])     # on velocity
-        + b"\x00" * 5           # remainder
+        b"adcn\x00\x01"
+        + struct.pack(">I", 0x20)            # record size
+        + struct.pack(">I", pitch)           # pitch in last byte
+        + struct.pack(">d", length)          # note length (ticks)
+        + b"\x00" * 18                       # reserved
+        + struct.pack(">d", position)        # note position (ticks)
+        + bytes([0])                         # padding
+        + bytes([velocity])                  # on-velocity
+        + bytes([64])                        # off-velocity
+        + b"\x00" * 5                        # remainder
     )
     return block
 
@@ -140,17 +150,15 @@ def test_midi_rejects_invalid_pitch():
     strip = _make_strip("Synth")
     # Build a note with invalid pitch (200 > 127)
     block = (
-        b"adcn\x00\x01" + struct.pack(">q", 1)
-        + struct.pack(">I", 0)
-        + struct.pack(">I", 0)
+        b"adcn\x00\x01"
+        + struct.pack(">I", 0x20)
+        + struct.pack(">I", 200)     # invalid pitch
         + struct.pack(">d", 480.0)
-        + b"\x00" * 16
-        + bytes([200])         # invalid pitch
-        + bytes([0x90])
+        + b"\x00" * 18
         + struct.pack(">d", 0.0)
         + bytes([0])
-        + bytes([64])
-        + bytes([100])
+        + bytes([100])               # on-velocity
+        + bytes([64])                # off-velocity
         + b"\x00" * 5
     )
     midi_part = (
@@ -170,22 +178,19 @@ def test_midi_rejects_invalid_pitch():
     path.unlink()
 
 
-def test_midi_rejects_non_note_on():
-    """Only note-on (0x90) status bytes should produce notes."""
+def test_midi_rejects_zero_pitch():
+    """MIDI notes with pitch=0 should be rejected (sentinel entries)."""
     strip = _make_strip("Lead")
-    # Status byte 0x80 = note-off, should be skipped
     block = (
-        b"adcn\x00\x01" + struct.pack(">q", 1)
-        + struct.pack(">I", 0)
-        + struct.pack(">I", 0)
+        b"adcn\x00\x01"
+        + struct.pack(">I", 0x20)
+        + struct.pack(">I", 0)       # pitch = 0 (sentinel)
         + struct.pack(">d", 480.0)
-        + b"\x00" * 16
-        + bytes([60])
-        + bytes([0x80])        # note-off, not note-on
+        + b"\x00" * 18
         + struct.pack(">d", 0.0)
         + bytes([0])
-        + bytes([64])
-        + bytes([100])
+        + bytes([100])               # on-velocity
+        + bytes([64])                # off-velocity
         + b"\x00" * 5
     )
     midi_part = (

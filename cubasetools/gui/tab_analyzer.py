@@ -1,4 +1,4 @@
-"""Mix Analyzer tab - plugin chains, EQ curves, compressor overview."""
+"""CPR Analyzer tab - plugin chains, mixer overview, MIDI."""
 
 import threading
 import customtkinter as ctk
@@ -9,18 +9,15 @@ from cubasetools.gui import theme
 from cubasetools.core.cpr_parser import parse_cpr
 from cubasetools.core.models import CubaseProject
 from cubasetools.analyzer.plugin_chain import get_plugin_chains, get_plugin_usage_stats
-from cubasetools.analyzer.eq_analyzer import get_all_eq_data
-from cubasetools.analyzer.compressor_analyzer import get_all_compressor_data, compressor_summary
 from cubasetools.export.json_export import export_project_json
 from cubasetools.gui.widgets.project_tree import ProjectTree
-from cubasetools.gui.widgets.eq_curve import EQCurveWidget
 from cubasetools.gui.widgets.plugin_table import PluginTable
 from cubasetools.gui.widgets.stat_card import StatCard
 from cubasetools.utils.config import DEFAULT_SCAN_PATH
 
 
 class AnalyzerTab:
-    """Mix analyzer tab with plugin chain, EQ, and compressor views."""
+    """CPR analyzer tab with plugin chain, mixer, and MIDI views."""
 
     def __init__(self, parent: ctk.CTkFrame):
         self.parent = parent
@@ -122,11 +119,8 @@ class AnalyzerTab:
 
         tab_mixer = self.content_tabs.add("Mixer")
         tab_chain = self.content_tabs.add("Plugin-Chain")
-        tab_eq = self.content_tabs.add("EQ-Kurven")
-        tab_comp = self.content_tabs.add("Kompressor")
         tab_stats = self.content_tabs.add("Plugin-Statistik")
         tab_midi = self.content_tabs.add("MIDI")
-        tab_auto = self.content_tabs.add("Automation")
 
         # Mixer overview table (expanded with new columns)
         self.mixer_table = PluginTable(
@@ -142,17 +136,6 @@ class AnalyzerTab:
         self.project_tree = ProjectTree(tab_chain)
         self.project_tree.pack(fill="both", expand=True)
 
-        # EQ curves
-        self.eq_widget = EQCurveWidget(tab_eq)
-        self.eq_widget.pack(fill="both", expand=True)
-
-        # Compressor table
-        self.comp_table = PluginTable(
-            tab_comp,
-            columns=["Track", "Plugin", "Preset", "Threshold", "Ratio", "Attack", "Release", "Makeup"],
-        )
-        self.comp_table.pack(fill="both", expand=True)
-
         # Plugin stats table
         self.stats_table = PluginTable(
             tab_stats,
@@ -166,13 +149,6 @@ class AnalyzerTab:
             columns=["Track", "Part", "Noten", "Tiefste", "Hoechste", "Vel Min", "Vel Max"],
         )
         self.midi_table.pack(fill="both", expand=True)
-
-        # Automation table
-        self.auto_table = PluginTable(
-            tab_auto,
-            columns=["Parameter", "Punkte", "Min", "Max"],
-        )
-        self.auto_table.pack(fill="both", expand=True)
 
     def _browse(self):
         path = filedialog.askopenfilename(
@@ -272,37 +248,6 @@ class AnalyzerTab:
         # Plugin chain tree
         self.project_tree.load_project(project)
 
-        # EQ curves
-        eq_data = get_all_eq_data(project)
-        if eq_data:
-            curves = [(f"{track.name} ({pname})", bands) for track, pname, bands in eq_data]
-            self.eq_widget.plot_curves(curves, project.sample_rate)
-        else:
-            self.eq_widget.clear()
-
-        # Compressor table (with preset names)
-        comp_data = get_all_compressor_data(project)
-        comp_rows = []
-        for track, comp in comp_data:
-            summary = compressor_summary(comp)
-            # Find preset name for this compressor plugin
-            preset = ""
-            for p in track.plugins:
-                if p.compressor and p.compressor.plugin_name == comp.plugin_name:
-                    preset = p.preset_name
-                    break
-            comp_rows.append([
-                track.name,
-                summary["Plugin"],
-                preset,
-                summary["Threshold"],
-                summary["Ratio"],
-                summary["Attack"],
-                summary["Release"],
-                summary["Makeup"],
-            ])
-        self.comp_table.set_data(comp_rows)
-
         # Plugin stats
         usage = get_plugin_usage_stats(project)
         stats_rows = []
@@ -334,20 +279,6 @@ class AnalyzerTab:
                     str(max(vels)),
                 ])
         self.midi_table.set_data(midi_rows)
-
-        # Automation table
-        auto_rows = []
-        for lane in project.automation:
-            if not lane.points:
-                continue
-            values = [p.value for p in lane.points]
-            auto_rows.append([
-                lane.parameter_name or "-",
-                str(len(lane.points)),
-                f"{min(values):.3f}",
-                f"{max(values):.3f}",
-            ])
-        self.auto_table.set_data(auto_rows)
 
     def _export_json(self):
         if not self.project:
