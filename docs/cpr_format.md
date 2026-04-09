@@ -218,30 +218,28 @@ Used when no channel strips are found (very old Cubase versions):
 
 ### Track Color
 
-Colors are stored as a **palette index** in the track event header (e.g.,
-`MAudioTrackEvent`, `MFolderTrack`).
+**⚠ Not working for Cubase 12+.** The color index extraction relies on
+legacy track event markers (`MAudioTrackEvent`, `MFolderTrack`, etc.) which
+are barely present in Cubase 12+ projects (typically only 1–4 per file, vs
+dozens of channel strips). The color palette IS extracted correctly, but the
+per-track color index mapping fails because the track event headers don't
+exist for most tracks.
 
-**Encoding:** 4 bytes BE int32 after the BOM (`\xef\xbb\xbf`) following the
-track name in the event header.
+**Legacy approach (Cubase 10–11):** Color palette index stored as 4 bytes
+BE int32 after the BOM (`\xef\xbb\xbf`) following the track name in the
+event header.
 
 - Value `-1` (0xFFFFFFFF) = default / no color
 - Value `0` = typically default (not assigned explicitly)
 - Value `1..N` = index into the project color palette
 
 **Color palette:** Stored in `UColorSet` as repeated entries:
-`Color 16\x00\xef\xbb\xbf` + 4 bytes ARGB (BE).
+`Color 16\x00\xef\xbb\xbf` + 4 bytes ARGB (BE). This works correctly
+across all Cubase versions.
 
-Example palette:
-| Index | Hex | R | G | B |
-|-------|-----------|-----|-----|-----|
-| 0 | `#E63737` | 230 | 55 | 55 |
-| 1 | `#E67837` | 230 | 120 | 55 |
-| 2 | `#E6BB3B` | 230 | 187 | 59 |
-| 3 | `#D5E94C` | 213 | 233 | 76 |
-| 4 | `#8EE637` | 142 | 230 | 55 |
-
-**Note:** Index 0 is skipped during assignment because most tracks without an
-explicitly set color default to index 0, leading to false positives.
+**TODO:** Reverse-engineer how Cubase 12+ stores per-track color assignments.
+The palette is present but the index-to-track mapping is in an unknown
+location (not in channel strips, not in legacy event headers).
 
 ---
 
@@ -349,17 +347,18 @@ channels (Stereo Out). It uses the range 0–32767 with center at 16383.5.
 
 ### Mute
 
-**Pattern:** `Mute\x00` + `\x00\x01` (type int) + 8 bytes BE int64.
+**⚠ Not working for Cubase 12+.** The `Mute\x00\x00\x01` pattern matches
+MIDI pitch mutes and plugin bypass states, not the track mute button. The
+per-track mute state in Cubase 12 is stored in an unknown location — it is
+NOT in the channel strip section and NOT in the legacy track event headers.
 
-- **0** = not muted
-- **1** = muted
+**Legacy pattern (Cubase 10–11):** `Mute\x00\x00\x01` + 8 bytes BE int64 (0=off, 1=on).
 
 ### Solo
 
-**Pattern:** `Solo\x00` + `\x00\x01` (type int) + 8 bytes BE int64.
-
-- **0** = not soloed
-- **1** = soloed
+**⚠ Not saved in .cpr files.** Solo is a live mixer state in Cubase and
+resets when the project is reopened. No `Solo=1` values were found in
+any tested project file, even with tracks actively soloed at save time.
 
 ---
 
@@ -533,9 +532,9 @@ fixed tempo store the BPM in `MTempoEvent` > `BPM` elsewhere in the file.
 | Track types | ✅ Parsed | `IDString` entries |
 | Track volume | ✅ Parsed | `Volume` compound > `AnchorValue` double (dB) |
 | Track pan | ✅ Parsed | Standard Panner `audioComponent` LE float (after `SummingMode`) |
-| Track mute | ✅ Parsed | `Mute` int field |
-| Track solo | ✅ Parsed | `Solo` int field |
-| Track color | ✅ Parsed | Palette index in event header + `UColorSet` |
+| Track mute | ⚠ Legacy only | `Mute` int field — Cubase 12+ stores mute elsewhere (unknown) |
+| Track solo | ❌ Not saved | Solo is a live mixer state, not persisted in .cpr files |
+| Track color | ⚠ Legacy only | Palette index in legacy event headers — Cubase 12+ uses unknown format |
 | Plugins | ✅ Parsed | `Plugin Name\x00` + `PresetChunkXMLTree` |
 | EQ bands | ✅ Parsed | Plugin parameter interpretation |
 | Compressor | ✅ Parsed | Plugin parameter interpretation |
